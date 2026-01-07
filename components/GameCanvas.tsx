@@ -936,7 +936,9 @@ const GameCanvas: React.FC<Props> = ({
 
         // 优先级 1: 基地防御检测 (回防逻辑)
         const distToMyBase = getDistance(t.pos, myBase.pos);
-        const isBaseUnderAttack = myBase.captureProgress > 0 || foes.some(f => getDistance(f.pos, myBase.pos) < 1000);
+        const FORBIDDEN_ZONE_RADIUS = 800; // 禁区半径
+        const isEnemyInForbiddenZone = foes.some(f => getDistance(f.pos, myBase.pos) < FORBIDDEN_ZONE_RADIUS);
+        const isBaseUnderAttack = myBase.captureProgress > 0 || isEnemyInForbiddenZone;
         
         // 优先级 2: 资源获取决策 (根据血量和距离)
         const healItems = next.items.filter(i => i.type === ItemType.HEAL);
@@ -986,8 +988,9 @@ const GameCanvas: React.FC<Props> = ({
         } else if (t.health < 60 && nearestHeal) {
           state = AIState.SEEK_HEALTH;
           targetPoint = nearestHeal.pos;
-        } else if (isBaseUnderAttack && (distToMyBase < 1500 || t.health > 80)) {
+        } else if (isEnemyInForbiddenZone && (distToMyBase < 2000 || t.health > 70)) {
           state = AIState.DEFEND_CORE;
+          // 封锁线目标点已经在上面 DEFEND_CORE 逻辑中计算了，这里只需设置状态
           targetPoint = myBase.pos;
         } else if (t.health > 70 && nearestBuff && getDistance(t.pos, nearestBuff.pos) < 800) {
           state = AIState.PATHFINDING;
@@ -1185,7 +1188,7 @@ const GameCanvas: React.FC<Props> = ({
         }
         if (t.detourTimer && t.detourTimer > 0) t.detourTimer--;
 
-        if (totalW < 30) { 
+        if (totalW < 40) { // 稍微提高阈值，增强稳定性
           // 真正被困住的情况：周围几乎没有正权重方向
           if (t.stuckTimer > 20) {
             t.reverseTimer = 40;
@@ -1213,12 +1216,21 @@ const GameCanvas: React.FC<Props> = ({
           moveTank(t, 0.6, 0.6, bestEscapeAngle); 
         } else { 
           // 平滑转向，避免剧烈抖动
-          let finalAngle = Math.atan2(by, bx);
+          // 只有当向量长度足够大时才更新方向，防止在原地微小抖动导致快速转圈
+          let finalAngle = t.rotation;
+          if (Math.abs(bx) > 0.1 || Math.abs(by) > 0.1) {
+            finalAngle = Math.atan2(by, bx);
+          }
           
-          // 引入历史角度平滑处理 (40% 权重保留上一帧方向，增加稳定性)
+          // 引入历史角度平滑处理 (增加权重使转向更丝滑)
           if (t.lastFinalAngle !== undefined) {
              const diff = ((finalAngle - t.lastFinalAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-             finalAngle = t.lastFinalAngle + diff * 0.6;
+             // 如果角度变化极小，则不更新，防止高频抖动
+             if (Math.abs(diff) > 0.01) {
+               finalAngle = t.lastFinalAngle + diff * 0.5; // 稍微降低跟随速度
+             } else {
+               finalAngle = t.lastFinalAngle;
+             }
           }
           t.lastFinalAngle = finalAngle;
           

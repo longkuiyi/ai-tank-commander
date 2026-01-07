@@ -42,6 +42,7 @@ export const getTacticalAdvice = async (state: GameState, team: Team): Promise<T
       }
     `;
 
+    console.log(`[Ollama] Requesting tactical advice for ${isAlly ? 'Ally' : 'Enemy'} using model: gpt-oss:120b-cloud`);
     const response = await fetch("http://localhost:11434/api/generate", {
       method: "POST",
       headers: {
