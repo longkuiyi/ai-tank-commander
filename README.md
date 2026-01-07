@@ -68,13 +68,21 @@
 
 ## 🏃 准备好开启你的冒险了吗？
 
-别犹豫，跟着我这五个简单的步骤，五分钟内你就能进入战场：
+别犹豫，跟着我这两个简单的步骤，五分钟内你就能进入战场：
 
-1.  **带走代码**：`git clone https://github.com/your-username/ai-tank-commander-tactical-arena.git`
-2.  **推门而入**：`cd ai-tank-commander-tactical-arena`
-3.  **整装待发**：`npm install` (安装那些让游戏跑起来的魔法库)
-4.  **唤醒灵魂**：在 `.env.local` 里填入你的 API Key，开启 AI 的智慧大门。
-5.  **鸣枪开火**：`npm run dev` —— 你的战场已准备就绪！
+### 第一步：克隆仓库 (Git Clone)
+打开终端或命令行，运行以下命令把代码“抱”回家：
+```bash
+git clone https://github.com/your-username/ai-tank-commander-tactical-arena.git
+```
+
+### 第二步：按照以下步骤启动
+1.  **进入目录**：`cd ai-tank-commander-tactical-arena`
+2.  **整装待发**：`npm install` (安装那些让游戏跑起来的魔法库)
+3.  **唤醒灵魂**：在 `.env.local` 里填入你的 API Key，开启 AI 的智慧大门。
+4.  **鸣枪开火**：`npm run dev` —— 你的战场已准备就绪！
+
+启动后，在浏览器中打开 `http://localhost:5173` 即可开始战斗！
 
 ---
 
