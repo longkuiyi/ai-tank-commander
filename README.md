@@ -1,5 +1,6 @@
 <div align="center">
 <img width="1200" height="475" alt="AI Tank Commander Banner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+<img width="810" height="755" alt="截屏2026-01-08 21 28 32" src="https://github.com/user-attachments/assets/d0aa7879-019d-4728-bc54-5d77cfd88ab6" />
 
 # AI Tank Commander: Tactical Arena
 AI 驱动的实时坦克战术竞技场（Canvas + React + Ollama / Gemini）
