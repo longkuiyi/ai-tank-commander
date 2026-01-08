@@ -1,6 +1,6 @@
 <div align="center">
 <img width="1024" alt="AI 坦克指挥官 - 战术配置界面" src="./docs/ai-tank-commander-cover.png" />
-blob:vscode-file://vscode-app/7beca372-3ada-4957-8e3c-d2af043c7eb1
+
 # AI Tank Commander: Tactical Arena
 AI 驱动的实时坦克战术竞技场（Canvas + React + Ollama / Gemini）
 </div>
