@@ -42,10 +42,33 @@ const Minimap: React.FC<Props> = ({ state }) => {
       ctx.fill();
     });
 
-    // 绘制据点
+    // 绘制据点 (基地)
     state.beds.forEach(b => {
-      ctx.fillStyle = b.team === Team.ALLY ? COLORS.ALLY : COLORS.ENEMY;
-      ctx.fillRect(b.pos.x * minimapScale - 4, b.pos.y * minimapScale - 4, 8, 8);
+      const color = b.team === Team.ALLY ? COLORS.ALLY : COLORS.ENEMY;
+      const bx = b.pos.x * minimapScale;
+      const by = b.pos.y * minimapScale;
+      
+      // 基地背景发光
+      const grad = ctx.createRadialGradient(bx, by, 0, bx, by, 8);
+      grad.addColorStop(0, color);
+      grad.addColorStop(1, 'transparent');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(bx, by, 8, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 基地图标 (菱形)
+      ctx.fillStyle = color;
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(bx, by - 5);
+      ctx.lineTo(bx + 5, by);
+      ctx.lineTo(bx, by + 5);
+      ctx.lineTo(bx - 5, by);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
     });
 
     const drawDot = (pos: {x: number, y: number}, color: string, size = 3) => {

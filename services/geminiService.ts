@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { GameState, Team, CommandType, KnowledgeBase, BattleRecord, AIState } from "../types";
+import { AI_CONFIG } from "../constants";
 
 export interface TacticalResult {
   globalAnalysis: string; // 总体情况分析
@@ -13,50 +14,138 @@ export interface TacticalResult {
   isError: boolean;
 }
 
+const TIMEOUT = AI_CONFIG.REQUEST_TIMEOUT;
+
+async function fetchWithTimeout(resource: string, options: any = {}) {
+  const { timeout = TIMEOUT } = options;
+  
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  
+  try {
+    const response = await fetch(resource, {
+      ...options,
+      signal: controller.signal  
+    });
+    clearTimeout(id);
+    return response;
+  } catch (error) {
+    clearTimeout(id);
+    throw error;
+  }
+}
+
+let ollamaAvailable = true;
+let lastOllamaCheck = 0;
+let hasNotifiedSuccess = false;
+
+async function checkOllamaStatus() {
+  const now = Date.now();
+  if (now - lastOllamaCheck < 60000) return ollamaAvailable; // 每分钟检查一次
+  
+  try {
+    const response = await fetch(`${AI_CONFIG.OLLAMA_API_BASE}/api/tags`, { 
+      method: 'GET'
+    }).catch(err => {
+      return null;
+    });
+    
+    const isOk = !!(response && response.ok);
+    ollamaAvailable = isOk;
+  } catch (e) {
+    ollamaAvailable = false;
+  }
+  lastOllamaCheck = now;
+  return ollamaAvailable;
+}
+
+// 简单的规则引擎，作为 AI 离线时的降级方案
+function getRuleBasedTactics(state: GameState, team: Team): TacticalResult {
+  const isAlly = team === Team.ALLY;
+  const allies = (isAlly ? state.allies : state.enemies).filter(t => t.health > 0);
+  const myBase = state.beds.find(b => b.team === team);
+  const enemyBase = state.beds.find(b => b.team !== team);
+  
+  const isUnderAttack = (myBase?.captureProgress || 0) > 0;
+  const canCapture = (enemyBase?.captureProgress || 0) < 4000;
+  
+  let command = CommandType.FREE_PLANNING;
+  let analysis = "执行自主战术规程。";
+  
+  if (isUnderAttack) {
+    command = CommandType.DEFEND;
+    analysis = "检测到基地受袭，全员回防！";
+  } else if (allies.length >= 3) {
+    command = CommandType.ATTACK;
+    analysis = "我方战力充沛，发起总攻。";
+  }
+
+  return {
+    globalAnalysis: analysis,
+    command: command,
+    teammateReports: allies.map(a => {
+      let strategy = AIState.ATTACK_CORE;
+      let report = "收到指令，正在推进。";
+      
+      if (isUnderAttack) {
+        strategy = AIState.DEFEND_CORE;
+        report = "正在回防基地！";
+      } else if (a.health < 40) {
+        strategy = AIState.SEEK_HEALTH;
+        report = "状态不佳，寻找补给。";
+      }
+      
+      return { id: a.id, report, strategy };
+    }),
+    isError: true
+  };
+}
+
 export const getTacticalAdvice = async (state: GameState, team: Team): Promise<TacticalResult> => {
   const isAlly = team === Team.ALLY;
-  const allies = isAlly ? state.allies : state.enemies;
-  const foes = isAlly ? state.enemies.filter(e => e.health > 0) : [state.player, ...state.allies].filter(a => a.health > 0);
-  const friends = isAlly ? [state.player, ...state.allies].filter(a => a.health > 0) : state.enemies.filter(e => e.health > 0);
-  
-  const myBase = isAlly ? state.beds[0] : state.beds[1];
-  const enemyBase = isAlly ? state.beds[1] : state.beds[0];
-  const myGold = isAlly ? state.gold : state.enemyGold;
+  const allies = (isAlly ? state.allies : state.enemies).filter(t => t.health > 0);
+  const enemies = (isAlly ? state.enemies : [state.player, ...state.allies]).filter(t => t.health > 0);
+  const myBase = state.beds.find(b => b.team === team);
+  const enemyBase = state.beds.find(b => b.team !== team);
 
-  // 地形特征提取
-  const wallTypes = state.walls.reduce((acc: any, w) => {
-    acc[w.type] = (acc[w.type] || 0) + 1;
-    return acc;
-  }, {});
-  const wallDensity = state.walls.length / (state.width * state.height / (60 * 60));
-  const terrainContext = `掩体密度:${wallDensity > 0.1 ? '极高' : '开阔'}, 主要墙体:${Object.entries(wallTypes).slice(0, 2).map(([k, v]) => k).join(',')}`;
+  const isPlayerAuto = isAlly && state.isAIControlled;
 
   const prompt = `
-    你是一位坦克战术指挥官。请分析当前局势并为每一位队友制定策略。
+    你现在是坦克大战中的顶级指挥官（模型: ${AI_CONFIG.OLLAMA_MODEL}）。你的智商已被设定为最高等级。
     
-    战场态势 (${isAlly ? '盟军' : '敌军'}):
-    - 友军: ${friends.length} (名单: ${allies.map(a => a.nickname).join(', ')})
-    - 敌方: ${foes.length}
-    - 经济: ${myGold} Gold
-    - 基地进度: 我方${myBase.captureProgress}, 敌方${enemyBase.captureProgress}
-    - 地形: ${terrainContext}
+    目标: 彻底击败${isAlly ? '敌方' : '玩家和他的盟友'}。
+    ${isPlayerAuto ? '【特急指令】玩家已开启 AI 代打模式，请你直接接管玩家坦克的控制，将其视为你的王牌战力进行调度。' : ''}
+    
+    当前战场局势:
+    - 我方存活坦克: ${allies.length}
+    - 敌方存活坦克: ${enemies.length}
+    - 玩家坦克生命值: ${state.player.health}% ${isPlayerAuto ? '(当前由你代打控制)' : ''}
+    - 我方基地占领进度: ${myBase?.captureProgress || 0}/5000
+    - 敌方基地占领进度: ${enemyBase?.captureProgress || 0}/5000
 
-    输出要求:
-    1. globalAnalysis: 简短的总体战术总结 (15字内)。
-    2. command: 核心指令 (${Object.values(CommandType).join(', ')})。
-    3. purchaseUpgrade: 升级建议 (damage, defense, speed, regen, haste | null)。
-    4. teammateReports: 为列表中的每个队友 (${allies.map(a => a.id).join(', ')}) 生成一份报告。
-       - report: 队友的口吻报告 (如 "我在A点伏击", "正在建立封锁线", "装甲受损，请求补给")。
-       - strategy: 对应 AIState (${Object.values(AIState).join(', ')})。
-
-    请严格按 JSON 格式返回: 
+    请展现你的战略天赋。不要只进行简单的攻击，要考虑包抄、诱敌、优先摧毁敌方核心、以及在危急时刻保护基地。
+    
+    【重要：对话要求】
+    在 teammateReports 的 report 字段中，请让坦克手们像在无线电中真实交流一样。
+    例如：“1号收到，正在从左翼包抄！”、“2号弹药充足，请求总攻！”、“基地告急，我正在全速回援！”
+    
+    必须以 JSON 格式返回:
     {
-      "globalAnalysis": "...",
-      "command": "...",
-      "purchaseUpgrade": "...",
-      "teammateReports": [{"id": "...", "report": "...", "strategy": "..."}]
+      "globalAnalysis": "当前整体战略意图（如：全线突击、防守反击、围魏救赵）",
+      "command": "当前主命令关键词（中文，如：全军突击、固守基地、搜索物资）",
+      "teammateReports": [
+        { "id": "坦克ID", "report": "战术执行反馈（展现个性和实时行动）", "strategy": "ATTACK_CORE/DEFEND_CORE/SEEK_HEALTH/PATHFINDING/AMBUSH/RECON/SURROUND_MOVE" }
+      ],
+      "purchaseUpgrade": "FIRE_RATE/DAMAGE/SPEED/REGEN/HASTE"
     }
   `;
+
+  const useOllamaFirst = AI_CONFIG.USE_OLLAMA_FIRST;
+
+  if (useOllamaFirst) {
+    const ollamaRes = await tryOllama(prompt, allies);
+    if (ollamaRes) return ollamaRes;
+  }
 
   // Try Gemini
   try {
@@ -81,16 +170,32 @@ export const getTacticalAdvice = async (state: GameState, team: Team): Promise<T
     console.warn("Gemini Error:", error);
   }
 
-  // Fallback to Ollama
+  if (!useOllamaFirst) {
+    const ollamaRes = await tryOllama(prompt, allies);
+    if (ollamaRes) return ollamaRes;
+  }
+
+  // Final Fallback: Rule-based
+  return getRuleBasedTactics(state, team);
+};
+
+async function tryOllama(prompt: string, allies: any[]): Promise<TacticalResult | null> {
+  const isOllamaRunning = await checkOllamaStatus();
+  if (!isOllamaRunning) return null;
+
   try {
-    const response = await fetch("http://localhost:11434/api/generate", {
+    const response = await fetchWithTimeout(`${AI_CONFIG.OLLAMA_API_BASE}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "gpt-oss:120b-cloud",
+        model: AI_CONFIG.OLLAMA_MODEL,
         prompt: prompt,
         system: "你是一位精通坦克战术的AI指挥官。必须以 JSON 格式回答。必须用中文回答。",
         stream: false,
+        options: {
+          temperature: 0.7,
+          num_predict: 800,
+        }
       }),
     });
 
@@ -103,17 +208,12 @@ export const getTacticalAdvice = async (state: GameState, team: Team): Promise<T
       }
     }
   } catch (error: any) {
-    console.error("Ollama API Error:", error);
+    // 静默处理错误
+    ollamaAvailable = false;
+    lastOllamaCheck = Date.now();
   }
-
-  // Final Fallback
-  return {
-    globalAnalysis: "维持现状，全军警戒。",
-    command: CommandType.ATTACK,
-    teammateReports: allies.map(a => ({ id: a.id, report: "正在待命。", strategy: AIState.ATTACK_CORE })),
-    isError: true
-  };
-};
+  return null;
+}
 
 export const reflectOnBattle = async (record: BattleRecord, kb: KnowledgeBase): Promise<{ learnedTactic?: string, playerPattern?: string, innovation?: string }> => {
   const prompt = `

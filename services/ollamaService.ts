@@ -32,7 +32,7 @@ export const getTacticalAdvice = async (state: GameState, team: Team): Promise<T
       - CAPTURE: 尝试占领中立或敌方据点
       - SURROUND: 包围并消灭敌方
       - RECON: 分散侦察
-      - FREE: 自主作战
+      - FREE_PLANNING: 自主作战
 
       请根据局势输出你的下一步策略。
       必须以 JSON 格式返回，格式如下:
@@ -64,13 +64,13 @@ export const getTacticalAdvice = async (state: GameState, team: Team): Promise<T
     const result = JSON.parse(data.response);
 
     return {
-      command: result.command as CommandType || CommandType.FREE,
+      command: result.command as CommandType || CommandType.FREE_PLANNING,
       dialogue: result.dialogue || (isAlly ? "保持阵型，继续推进！" : "维持现状，继续战斗。")
     };
   } catch (error) {
     console.error("Ollama API Error:", error);
     return {
-      command: CommandType.FREE,
+      command: CommandType.FREE_PLANNING,
       dialogue: "通讯链路不稳定，执行预设自主作战方案。"
     };
   }

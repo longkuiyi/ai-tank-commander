@@ -10,6 +10,7 @@ export enum WallType {
   GLASS = 'GLASS',
   STONE = 'STONE',
   WATER = 'WATER',
+  SWAMP = 'SWAMP',
   REBOUND = 'REBOUND',
   IRON = 'IRON',
   BULLETPROOF = 'BULLETPROOF'
@@ -134,7 +135,11 @@ export interface Bullet extends GameObject {
 export enum EffectType {
   EXPLOSION = 'EXPLOSION',
   HIT = 'HIT',
-  DESTRUCTION = 'DESTRUCTION'
+  DESTRUCTION = 'DESTRUCTION',
+  MUZZLE_FLASH = 'MUZZLE_FLASH',
+  SMOKE = 'SMOKE',
+  SHOCKWAVE = 'SHOCKWAVE',
+  SPARK = 'SPARK'
 }
 
 export interface VisualEffect extends GameObject {
@@ -142,6 +147,9 @@ export interface VisualEffect extends GameObject {
   startTime: number;
   duration: number;
   color?: string;
+  rotation?: number;
+  velocity?: Vector2D;
+  opacity?: number;
 }
 
 export interface Wall extends GameObject {

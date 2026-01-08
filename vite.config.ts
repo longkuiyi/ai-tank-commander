@@ -8,6 +8,22 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        proxy: {
+          '/api-ollama': {
+            target: 'http://localhost:11434',
+            changeOrigin: true,
+            rewrite: (path) => path.replace(/^\/api-ollama/, ''),
+            configure: (proxy, options) => {
+              proxy.on('error', (err, req, res) => {
+                console.log('proxy error', err);
+              });
+              proxy.on('proxyReq', (proxyReq, req, res) => {
+                // 增加代理层的超时时间 (120秒)
+                req.setTimeout(120000);
+              });
+            }
+          }
+        }
       },
       plugins: [react()],
       define: {

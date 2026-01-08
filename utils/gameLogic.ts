@@ -13,7 +13,7 @@ export const getAngle = (v1: Vector2D, v2: Vector2D): number => {
 export const checkCollision = (obj1: GameObject, obj2: GameObject): boolean => {
   const dx = obj1.pos.x - obj2.pos.x;
   const dy = obj1.pos.y - obj2.pos.y;
-  const distance = Math.sqrt(dx * dx + dy * dy);
+  const distSq = dx * dx + dy * dy;
   
   // 判定是否是子弹
   const isBullet = (obj: GameObject) => 'damage' in obj;
@@ -37,7 +37,8 @@ export const checkCollision = (obj1: GameObject, obj2: GameObject): boolean => {
     size2 *= 1.3;
   }
   
-  return distance < (size1 / 2 + size2 / 2);
+  const radiusSum = (size1 / 2 + size2 / 2);
+  return distSq < radiusSum * radiusSum;
 };
 
 export const isOutOfBounds = (pos: Vector2D, size: number, width: number = WORLD_WIDTH, height: number = WORLD_HEIGHT): boolean => {

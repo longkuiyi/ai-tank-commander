@@ -21,7 +21,7 @@ export const SPEED_BUFF_DURATION = 15000;  // 速度持续 15 秒
 export const DAMAGE_BUFF_DURATION = 15000; // 伤害持续 15 秒
 export const DEFENSE_BUFF_DURATION = 25000; // 防御持续 25 秒 (符合 20-30 秒要求)
 export const HEAL_BUFF_DURATION = 5000;    // 回血持续 5 秒
-export const AUTO_REGEN_INTERVAL = 1000; // 1秒回一次血
+export const AUTO_REGEN_INTERVAL = 2000; // 2秒回一次血
 export const AUTO_REGEN_AMOUNT = 2; // 每次回2点
 
 // 增强后的物资系数
@@ -45,12 +45,15 @@ export const SHOP_UPGRADES = {
   BUFF_INCREMENT: 0.2, // 每次提升 20%
 };
 
-export const PLAYER_SPEED = 400;
-export const AI_SPEED = 250;
-export const BULLET_SPEED = 1000;
+export const PLAYER_SPEED = 450; // 手动操作速度适中
+export const AI_SPEED = 350;     // 普通盟友和敌方坦克速度较慢，突出玩家优势
+export const AI_AUTOPILOT_SPEED_MULT = 3.5; // AI 代打时速度极大提升，展现顶级 AI 的压制力
+export const BULLET_SPEED = 1400;
 
 export const WATER_SLOW_FACTOR = 0.5;
+export const SWAMP_SLOW_FACTOR = 0.25;
 export const BULLET_WATER_SLOW_FACTOR = 0.6;
+export const BULLET_SWAMP_SLOW_FACTOR = 0.45;
 
 export const MAX_HEALTH_TANK = 100;
 export const SHOOT_COOLDOWN = 500; 
@@ -71,6 +74,7 @@ export const COLORS = {
   GLASS: 'rgba(165, 243, 252, 0.4)', 
   STONE: '#64748b',  
   WATER: 'rgba(30, 64, 175, 0.6)',
+  SWAMP: '#78350f',
   REBOUND: '#bef264', // 浅绿色反弹障碍物
   GROUND: '#166534',
   HEALTH: '#22c55e' // 医疗包颜色
@@ -78,3 +82,11 @@ export const COLORS = {
 
 export const MINIMAP_SCALE = 0.05;
 export const INFLUENCE_GRID_SIZE = 200;
+
+// AI 配置
+export const AI_CONFIG = {
+  OLLAMA_API_BASE: '/api-ollama', // 使用 Vite 代理解决 CORS 问题
+  OLLAMA_MODEL: 'gpt-oss:120b-cloud',
+  USE_OLLAMA_FIRST: true,
+  REQUEST_TIMEOUT: 30000, // 保持 30 秒超时以确保稳定性
+};

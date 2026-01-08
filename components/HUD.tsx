@@ -82,6 +82,8 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
         case CommandType.DEFEND: return "战术性收缩防御";
         case CommandType.SURROUND: return "正在执行口袋阵";
         case CommandType.CAPTURE: return "分兵渗透占领中";
+        case CommandType.RECON: return "展开全场测绘侦查";
+        case CommandType.FREE_PLANNING: return "执行战术自主序列";
         default: return "维持现有态势";
      }
   };

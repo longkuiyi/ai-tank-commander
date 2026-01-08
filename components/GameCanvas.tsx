@@ -3,9 +3,9 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Team, Tank, Bullet, Wall, WallType, GameState, Vector2D, Bed, AIState, CommandType, Item, ItemType, ControlMode, TeamUpgrades, EffectType, VisualEffect } from '../types';
 import { 
   WORLD_WIDTH, WORLD_HEIGHT, TANK_SIZE, BULLET_SIZE, WALL_SIZE, 
-  PLAYER_SPEED, AI_SPEED, BULLET_SPEED, MAX_HEALTH_TANK, 
+  PLAYER_SPEED, AI_SPEED, AI_AUTOPILOT_SPEED_MULT, BULLET_SPEED, MAX_HEALTH_TANK, 
   SHOOT_COOLDOWN, COLORS, BED_SIZE, CAPTURE_RADIUS, CAPTURE_TIME_REQUIRED, RESPAWN_DELAY,
-  WATER_SLOW_FACTOR, BULLET_DAMAGE,
+  WATER_SLOW_FACTOR, SWAMP_SLOW_FACTOR, BULLET_WATER_SLOW_FACTOR, BULLET_SWAMP_SLOW_FACTOR, BULLET_DAMAGE,
   HEALTH_PACK_HEAL, HEALTH_PACK_REGEN_PER_SEC, HEALTH_PACK_REGEN_DURATION, MAX_HEALTH_PACKS, ITEM_SIZE, MAX_ITEMS, ITEM_COLORS, 
   SPEED_BUFF_DURATION, DAMAGE_BUFF_DURATION, DEFENSE_BUFF_DURATION, HEAL_BUFF_DURATION,
   AUTO_REGEN_INTERVAL, AUTO_REGEN_AMOUNT,
@@ -65,6 +65,24 @@ const GameCanvas: React.FC<Props> = ({
     return side1 === side2;
   };
 
+  // 优化：利用空间网格快速获取附近的墙体，避免遍历所有墙体
+  const getNearbyWalls = (pos: Vector2D, radius: number = 100) => {
+    const { grid, cellSize } = wallGridRef.current;
+    const nearby: Wall[] = [];
+    const minX = Math.floor((pos.x - radius) / cellSize);
+    const maxX = Math.floor((pos.x + radius) / cellSize);
+    const minY = Math.floor((pos.y - radius) / cellSize);
+    const maxY = Math.floor((pos.y + radius) / cellSize);
+
+    for (let x = minX; x <= maxX; x++) {
+      for (let y = minY; y <= maxY; y++) {
+        const key = `${x},${y}`;
+        if (grid[key]) nearby.push(...grid[key]);
+      }
+    }
+    return nearby;
+  };
+
   const [gameState, setGameState] = useState<GameState>(() => {
     const safetyZones = [{ x: 400, y: 400, r: 400 }, { x: WORLD_WIDTH - 400, y: WORLD_HEIGHT - 400, r: 400 }];
     const walls: Wall[] = [];
@@ -93,7 +111,8 @@ const GameCanvas: React.FC<Props> = ({
                      typeRand > 0.75 ? WallType.STONE : 
                      typeRand > 0.65 ? WallType.REBOUND : 
                      typeRand > 0.55 ? WallType.WATER : 
-                     typeRand > 0.3 ? WallType.MUD : WallType.GLASS;
+                     typeRand > 0.45 ? WallType.SWAMP :
+                     typeRand > 0.25 ? WallType.MUD : WallType.GLASS;
         
         const cols = 2 + Math.floor(Math.random() * 3);
         const rows = 2;
@@ -111,7 +130,7 @@ const GameCanvas: React.FC<Props> = ({
             pos: wallPos, 
             size: WALL_SIZE, 
             type, 
-            health: (type === WallType.BULLETPROOF || type === WallType.WATER || type === WallType.REBOUND) ? 999999 : 
+            health: (type === WallType.BULLETPROOF || type === WallType.WATER || type === WallType.SWAMP || type === WallType.REBOUND) ? 999999 : 
                     type === WallType.IRON ? 8 :
                     type === WallType.STONE ? 5 :
                     type === WallType.MUD ? 3 : 1 
@@ -175,6 +194,23 @@ const GameCanvas: React.FC<Props> = ({
 
   const stateRef = useRef<GameState>(gameState);
   
+  // 优化：构建空间网格索引，大幅提升碰撞检测性能
+  const wallGrid = React.useMemo(() => {
+    const grid: Record<string, Wall[]> = {};
+    const cellSize = 200; // 较小的网格可以更精确地缩小搜索范围
+    gameState.walls.forEach(w => {
+      const gx = Math.floor(w.pos.x / cellSize);
+      const gy = Math.floor(w.pos.y / cellSize);
+      const key = `${gx},${gy}`;
+      if (!grid[key]) grid[key] = [];
+      grid[key].push(w);
+    });
+    return { grid, cellSize };
+  }, [gameState.walls]);
+
+  const wallGridRef = useRef(wallGrid);
+  useEffect(() => { wallGridRef.current = wallGrid; }, [wallGrid]);
+
   useEffect(() => {
     // 强制触发一次同步，确保 App.tsx 收到初始状态
     console.log("Syncing initial state to App");
@@ -295,11 +331,13 @@ const GameCanvas: React.FC<Props> = ({
   }, []);
 
   const lastOnStateUpdateRef = useRef<number>(0);
+  const frameCountRef = useRef<number>(0);
 
   const gameLoop = useCallback(() => {
     const now = Date.now();
     const dt = (now - lastUpdateRef.current) / 1000;
     lastUpdateRef.current = now;
+    frameCountRef.current++;
 
     const prev = stateRef.current;
     if (prev.isGameOver || prev.isPaused) {
@@ -344,10 +382,14 @@ const GameCanvas: React.FC<Props> = ({
             const newPos1 = { x: t1.pos.x + pushX, y: t1.pos.y + pushY };
             const newPos2 = { x: t2.pos.x - pushX, y: t2.pos.y - pushY };
             
-            if (!next.walls.some(w => w.type !== WallType.WATER && checkCollision({ ...t1, pos: newPos1 }, w)) && !isOutOfBounds(newPos1, TANK_SIZE, WORLD_WIDTH, WORLD_HEIGHT)) {
+            // 优化：使用空间网格加速碰撞检测
+            const nearbyWalls1 = getNearbyWalls(newPos1, TANK_SIZE);
+            const nearbyWalls2 = getNearbyWalls(newPos2, TANK_SIZE);
+
+            if (!nearbyWalls1.some(w => w.type !== WallType.WATER && w.type !== WallType.SWAMP && checkCollision({ ...t1, pos: newPos1 }, w)) && !isOutOfBounds(newPos1, TANK_SIZE, WORLD_WIDTH, WORLD_HEIGHT)) {
               t1.pos = newPos1;
             }
-            if (!next.walls.some(w => w.type !== WallType.WATER && checkCollision({ ...t2, pos: newPos2 }, w)) && !isOutOfBounds(newPos2, TANK_SIZE, WORLD_WIDTH, WORLD_HEIGHT)) {
+            if (!nearbyWalls2.some(w => w.type !== WallType.WATER && w.type !== WallType.SWAMP && checkCollision({ ...t2, pos: newPos2 }, w)) && !isOutOfBounds(newPos2, TANK_SIZE, WORLD_WIDTH, WORLD_HEIGHT)) {
               t2.pos = newPos2;
             }
           }
@@ -376,97 +418,126 @@ const GameCanvas: React.FC<Props> = ({
 
               let updatedEnemyGold = prev.enemyGold;
               let updatedEnemyUpgrades = { ...prev.enemyTeamUpgrades };
+              let enemyActiveMenu = prev.enemyActiveMenu;
+              let enemyActiveTab = prev.enemyActiveTab;
 
               // 敌方自动购物逻辑
-              if (result.purchaseUpgrade && updatedEnemyGold >= 150) {
-                const upgradeId = result.purchaseUpgrade as string;
-                const typedUpgradeId = upgradeId as keyof typeof updatedEnemyUpgrades;
-                if (Object.prototype.hasOwnProperty.call(updatedEnemyUpgrades, typedUpgradeId)) {
-                  updatedEnemyGold -= 150;
-                  updatedEnemyUpgrades[typedUpgradeId] += SHOP_UPGRADES.BUFF_INCREMENT;
+              if (result.purchaseUpgrade && updatedEnemyGold >= SHOP_UPGRADES.BASE_COST) {
+                const upgradeId = result.purchaseUpgrade as keyof typeof updatedEnemyUpgrades;
+                if (Object.prototype.hasOwnProperty.call(updatedEnemyUpgrades, upgradeId)) {
+                  updatedEnemyGold -= SHOP_UPGRADES.BASE_COST;
+                  updatedEnemyUpgrades[upgradeId] += SHOP_UPGRADES.BUFF_INCREMENT;
+                  
+                  // 模拟敌方 AI 打开商城
+                  enemyActiveMenu = true;
+                  enemyActiveTab = 'SHOP';
+                  enemyAiMenuCloseTimeRef.current = Date.now() + 1500;
                 }
+              } else if (result.command !== prev.enemyCommand) {
+                // 如果指令改变，模拟打开战术指令集
+                enemyActiveMenu = true;
+                enemyActiveTab = 'COMMANDS';
+                enemyAiMenuCloseTimeRef.current = Date.now() + 1000;
               }
 
               return { 
                 ...prev, 
-                enemyCommand: result.command, 
+                enemyCommand: result.command || prev.enemyCommand, 
                 enemies: newEnemies,
                 enemyGold: updatedEnemyGold,
-                enemyTeamUpgrades: updatedEnemyUpgrades
+                enemyTeamUpgrades: updatedEnemyUpgrades,
+                enemyActiveMenu,
+                enemyActiveTab
               };
             });
             isEnemyStrategyLoading.current = false;
             lastEnemyStrategyRef.current = Date.now();
           }).catch((err) => {
-            console.error("Enemy tactical error:", err);
             isEnemyStrategyLoading.current = false;
             lastEnemyStrategyRef.current = Date.now();
           });
         }
     }
 
-    // 友方战术决策 (AI 接入所有坦克)
-    if (now - lastAllyStrategyRef.current > 15000 && !isAllyStrategyLoading.current) {
+    // 友方战术决策 (AI 控制玩家时，决策速度提升到 5 秒一次)
+    const allyStrategyInterval = next.isAIControlled ? 5000 : 8000;
+    if (now - lastAllyStrategyRef.current > allyStrategyInterval && !isAllyStrategyLoading.current) {
       isAllyStrategyLoading.current = true;
       getTacticalAdvice(next, Team.ALLY).then(result => {
         setGameState(prev => {
           const newAllies = prev.allies.map(ally => {
-            // 查找该队友是否有特定的策略报告
             const report = result.teammateReports.find(r => r.id === ally.id);
+            // 综合全局战略和个人任务进行讨论
+            let dialogue = ally.lastDialogue;
             if (report) {
-              return { 
-                ...ally, 
-                lastDialogue: report.report,
-                aiState: report.strategy || ally.aiState 
-              };
+              dialogue = `[${result.command}] ${report.report}`;
+            } else if (result.globalAnalysis) {
+              dialogue = `战略部署: ${result.globalAnalysis}`;
             }
-            return ally;
+            
+            return { 
+              ...ally, 
+              lastDialogue: dialogue,
+              aiState: report?.strategy || ally.aiState 
+            };
           });
 
-          // 如果有全局分析，可以让指挥官（玩家或自动驾驶状态下的玩家）说话，或者在 HUD 显示
-          // 这里我们更新一下玩家的对话，如果处于自动驾驶模式
           let newPlayer = { ...prev.player };
           if (prev.isAIControlled && result.globalAnalysis) {
-            newPlayer.lastDialogue = result.globalAnalysis;
+            newPlayer.lastDialogue = `AI 指挥官: ${result.globalAnalysis}`;
           }
 
           let updatedGold = prev.gold;
           let updatedUpgrades = { ...prev.teamUpgrades };
+          let activeMenu = prev.activeMenu;
+          let activeTab = prev.activeTab;
 
-          // 盟军自动购物逻辑 (AI 帮玩家花钱)
-          if (result.purchaseUpgrade && updatedGold >= 150) {
-            const upgradeId = result.purchaseUpgrade as string;
-            const typedUpgradeId = upgradeId as keyof typeof updatedUpgrades;
-            if (Object.prototype.hasOwnProperty.call(updatedUpgrades, typedUpgradeId)) {
-              updatedGold -= 150;
-              updatedUpgrades[typedUpgradeId] += SHOP_UPGRADES.BUFF_INCREMENT;
+          // 盟军自动购物逻辑
+          const aiPurchaseThreshold = prev.isAIControlled ? SHOP_UPGRADES.BASE_COST : SHOP_UPGRADES.BASE_COST + 100;
+          if (result.purchaseUpgrade && updatedGold >= aiPurchaseThreshold) {
+            const upgradeId = result.purchaseUpgrade as keyof typeof updatedUpgrades;
+            if (Object.prototype.hasOwnProperty.call(updatedUpgrades, upgradeId)) {
+              updatedGold -= SHOP_UPGRADES.BASE_COST;
+              updatedUpgrades[upgradeId] += SHOP_UPGRADES.BUFF_INCREMENT;
+
+              // 只有当 AI 控制玩家时，才显示打开菜单的动作
+              if (prev.isAIControlled) {
+                activeMenu = true;
+                activeTab = 'SHOP';
+                aiMenuCloseTimeRef.current = Date.now() + 1500;
+              }
 
               const upgradeNames: Record<string, string> = {
                 damage: '攻击', defense: '防御', speed: '速度', regen: '回血', haste: '射速'
               };
-              const upgradeName = upgradeNames[upgradeId] || upgradeId;
-
-              // 通知全队
+              const upgradeKey = upgradeId as string;
+              const upgradeName = upgradeNames[upgradeKey] || upgradeKey;
               if (newPlayer.health > 0) {
-                newPlayer.lastDialogue = `[战术升级:${upgradeName}] ${newPlayer.lastDialogue || ''}`;
+                newPlayer.lastDialogue = `[军需购入:${upgradeName}] ${newPlayer.lastDialogue || ''}`;
               }
             }
+          } else if (prev.isAIControlled && result.command !== prev.currentCommand) {
+            // 指令改变且 AI 控制时，模拟打开指令菜单
+            activeMenu = true;
+            activeTab = 'COMMANDS';
+            aiMenuCloseTimeRef.current = Date.now() + 1000;
           }
 
           return { 
             ...prev, 
-            currentCommand: result.command, 
+            currentCommand: result.command || prev.currentCommand, 
             allies: newAllies,
             player: newPlayer,
             gold: updatedGold,
             teamUpgrades: updatedUpgrades,
-            tacticalAdvice: result.globalAnalysis
+            tacticalAdvice: result.globalAnalysis,
+            activeMenu,
+            activeTab
           };
         });
         isAllyStrategyLoading.current = false;
         lastAllyStrategyRef.current = Date.now();
       }).catch((err) => {
-        console.error("Ally tactical error:", err);
         isAllyStrategyLoading.current = false;
         lastAllyStrategyRef.current = Date.now();
       });
@@ -485,11 +556,43 @@ const GameCanvas: React.FC<Props> = ({
         }
       }
 
+      // 每帧构建坦克空间网格，用于加速坦克间的碰撞检测和子弹命中检测
+      const tankGrid: Record<string, Tank[]> = {};
+      const tCellSize = 200;
+      allTanks.forEach(t => {
+        if (t.health <= 0) return;
+        const gx = Math.floor(t.pos.x / tCellSize);
+        const gy = Math.floor(t.pos.y / tCellSize);
+        const key = `${gx},${gy}`;
+        if (!tankGrid[key]) tankGrid[key] = [];
+        tankGrid[key].push(t);
+      });
+
+      const getNearbyTanks = (pos: Vector2D, radius: number = 100) => {
+        const nearby: Tank[] = [];
+        const minX = Math.floor((pos.x - radius) / tCellSize);
+        const maxX = Math.floor((pos.x + radius) / tCellSize);
+        const minY = Math.floor((pos.y - radius) / tCellSize);
+        const maxY = Math.floor((pos.y + radius) / tCellSize);
+        for (let x = minX; x <= maxX; x++) {
+          for (let y = minY; y <= maxY; y++) {
+            const key = `${x},${y}`;
+            if (tankGrid[key]) nearby.push(...tankGrid[key]);
+          }
+        }
+        return nearby;
+      };
+
+      // 优化：将坦克存入 Map 以便 $O(1)$ 查找
+      const tankMap = new Map<string, Tank>();
+      allTanks.forEach(t => tankMap.set(t.id, t));
+
       const moveTank = (t: Tank, dx: number, dy: number, forceAngle?: number) => {
         const isIdle = dx === 0 && dy === 0;
         const targetAngle = forceAngle !== undefined ? forceAngle : (isIdle ? t.rotation : Math.atan2(dy, dx));
         const currentSpeed = t.currentSpeed || 0;
         const inWater = next.walls.some(w => w.type === WallType.WATER && checkCollision(t, w));
+        const inSwamp = next.walls.some(w => w.type === WallType.SWAMP && checkCollision(t, w));
         
         // 计算速度 Buff
         let speedMult = 1.0;
@@ -502,10 +605,16 @@ const GameCanvas: React.FC<Props> = ({
           speedMult += next.enemyTeamUpgrades.speed;
         }
         
+        // AI 性能提升：所有 AI 坦克（盟友、敌人）以及开启代打的玩家坦克都获得速度加成
+        if (t.isAI || (next.isAIControlled && t.id === 'player')) {
+          speedMult *= AI_AUTOPILOT_SPEED_MULT;
+        }
+        
         let limitSpeed = isIdle ? 0 : t.speed * speedMult;
         if (inWater) limitSpeed *= WATER_SLOW_FACTOR;
-        const accelRate = inWater ? 2.0 : 8.0;
-        const frictionRate = inWater ? 4.0 : 12.0;
+        if (inSwamp) limitSpeed *= SWAMP_SLOW_FACTOR;
+        const accelRate = (inWater || inSwamp) ? 2.0 : 8.0;
+        const frictionRate = (inWater || inSwamp) ? 4.0 : 12.0;
         if (isIdle) {
           const diff = 0 - currentSpeed;
           t.currentSpeed = currentSpeed + diff * Math.min(1, frictionRate * dt);
@@ -522,8 +631,12 @@ const GameCanvas: React.FC<Props> = ({
           const nextPos = { x: t.pos.x + vx, y: t.pos.y + vy };
           
           const isBlocked = (p: Vector2D) => {
-            const wallHit = next.walls.some(w => w.type !== WallType.WATER && checkCollision({ ...t, pos: p }, w));
-            const tankHit = allTanks.some(other => other.id !== t.id && other.health > 0 && checkCollision({ ...t, pos: p }, other));
+            // 优化：使用 getNearbyWalls 代替全量扫描
+            const nearbyWalls = getNearbyWalls(p, TANK_SIZE * 2);
+            const wallHit = nearbyWalls.some(w => w.type !== WallType.WATER && w.type !== WallType.SWAMP && checkCollision({ ...t, pos: p }, w));
+            // 优化：使用 getNearbyTanks 代替全量扫描
+            const nearbyTanks = getNearbyTanks(p, TANK_SIZE * 2);
+            const tankHit = nearbyTanks.some(other => other.id !== t.id && other.health > 0 && checkCollision({ ...t, pos: p }, other));
             return wallHit || tankHit || isOutOfBounds(p, TANK_SIZE, WORLD_WIDTH, WORLD_HEIGHT);
           };
 
@@ -583,9 +696,10 @@ const GameCanvas: React.FC<Props> = ({
         return false;
       };
 
-      // 坦克自动回血和 Buff 维护 (包含医疗包的额外回血)
+      // 坦克自动回血和 Buff 维护 (包含医疗包和基地回血)
       allTanks.forEach(t => {
         if (t.health > 0 && t.health < t.maxHealth) {
+          // 1. 自动回血 (每隔 AUTO_REGEN_INTERVAL)
           let regenAmount = (!t.lastRegenTime || now - t.lastRegenTime > AUTO_REGEN_INTERVAL) ? AUTO_REGEN_AMOUNT : 0;
           
           // 应用永久回血加成
@@ -597,14 +711,21 @@ const GameCanvas: React.FC<Props> = ({
             }
           }
           
-          // 如果有医疗包Buff，持续回血
+          // 2. 医疗包 Buff 持续回血
           let buffRegen = 0;
           if (t.buffs?.healTimer && t.buffs.healTimer > now) {
              buffRegen = HEALTH_PACK_REGEN_PER_SEC * dt;
           }
+
+          // 3. 基地回血 (每秒 1 滴)
+          let baseRegen = 0;
+          const inOwnBase = next.beds.some(bed => isSameSide(t.team, bed.team) && getDistance(t.pos, bed.pos) < bed.size / 2);
+          if (inOwnBase) {
+            baseRegen = 1 * dt; // 每秒 1 滴
+          }
  
-          if (regenAmount > 0 || buffRegen > 0) {
-            t.health = Math.min(t.maxHealth, t.health + regenAmount + buffRegen);
+          if (regenAmount > 0 || buffRegen > 0 || baseRegen > 0) {
+            t.health = Math.min(t.maxHealth, t.health + regenAmount + buffRegen + baseRegen);
             if (regenAmount > 0) t.lastRegenTime = now;
           }
         }
@@ -649,7 +770,7 @@ const GameCanvas: React.FC<Props> = ({
                    y: next.player.pos.y + Math.sin(moveAngle) * 150
                  };
                  // 检查移动方向是否真的被墙堵住
-                 const isPathBlocked = next.walls.some(w => w.type !== WallType.WATER && checkCollision({ ...next.player, pos: lookAheadPos }, w));
+                 const isPathBlocked = next.walls.some(w => w.type !== WallType.WATER && w.type !== WallType.SWAMP && checkCollision({ ...next.player, pos: lookAheadPos }, w));
                  
                  if (isPathBlocked) {
                    const breakableWalls = next.walls.filter(w => 
@@ -864,7 +985,10 @@ const GameCanvas: React.FC<Props> = ({
 
       // 我方 AI 购买 (仅当 AI 控制时，或作为队友辅助)
       if (now - lastAIBuyTimeRef.current > 15000) { // 每 15 秒检查一次
-        if (next.gold >= SHOP_UPGRADES.BASE_COST) {
+        // 修改：当玩家非 AI 控制时，AI 只有在金币充足（大于 150）时才自动购买，为玩家预留 100 金币
+        const aiPurchaseThreshold = next.isAIControlled ? SHOP_UPGRADES.BASE_COST : SHOP_UPGRADES.BASE_COST + 100;
+        
+        if (next.gold >= aiPurchaseThreshold) {
           // 找出等级最低的项进行升级
           const sortedUpgrades = [...shopItems].sort((a, b) => 
             next.teamUpgrades[a.id as keyof TeamUpgrades] - next.teamUpgrades[b.id as keyof TeamUpgrades]
@@ -1030,20 +1154,43 @@ const GameCanvas: React.FC<Props> = ({
         else if (isCommanded && activeCmd === CommandType.SURROUND && foes.length > 0) {
           state = AIState.SURROUND_MOVE;
           const orbitTarget = isAlly ? (next.enemies.find(e => e.isLeader && e.health > 0) || foes[0]) : next.player;
-          const orbitRadius = 600;
-          const currentAngle = (now / 2000) + (idx * (Math.PI * 2 / 5));
-          targetPoint = { x: orbitTarget.pos.x + Math.cos(currentAngle) * orbitRadius, y: orbitTarget.pos.y + Math.sin(currentAngle) * orbitRadius };
+          const orbitRadius = 650; // 稍微扩大环绕半径，避免扎堆
+          const orbitSpeed = now / 2500; // 降低环绕角速度，使动作更稳健
+          const currentAngle = orbitSpeed + (idx * (Math.PI * 2 / 5));
+          targetPoint = { 
+            x: orbitTarget.pos.x + Math.cos(currentAngle) * orbitRadius, 
+            y: orbitTarget.pos.y + Math.sin(currentAngle) * orbitRadius 
+          };
         } else if (isCommanded && activeCmd === CommandType.CAPTURE) {
-          state = AIState.PATHFINDING; targetPoint = enemyBase.pos;
+          state = AIState.PATHFINDING; 
+          // 占领模式：如果已经在核心附近，则减速并转向敌方基地方向
+          if (getDistance(t.pos, enemyBase.pos) < CAPTURE_RADIUS) {
+             t.currentSpeed *= 0.5;
+             targetPoint = enemyBase.pos;
+          } else {
+             targetPoint = enemyBase.pos;
+          }
         } else if (isCommanded && activeCmd === CommandType.DEFEND) {
           state = AIState.DEFEND_CORE;
-          // 守备逻辑优化：在基地周围分散站位
-          const angleOffset = (idx * (Math.PI * 2)) / 6; // 每个坦克分配不同角度
-          const defendRadius = 350 + (idx % 2) * 150; // 交错半径，形成两层防御圈
+          // 守备逻辑：在基地周围形成防御网，并根据最近敌人的位置动态调整朝向
+          const angleOffset = (idx * (Math.PI * 2)) / 6; 
+          const defendRadius = 400 + (idx % 2) * 150; 
           targetPoint = {
             x: myBase.pos.x + Math.cos(angleOffset) * defendRadius,
             y: myBase.pos.y + Math.sin(angleOffset) * defendRadius
           };
+        } else if (isCommanded && activeCmd === CommandType.RECON) {
+          state = AIState.RECON;
+          if (!t.reconTarget || getDistance(t.pos, t.reconTarget) < 200) {
+            // 侦察点优先选择地图四个角落和中心区域
+            const points = [
+              {x: 800, y: 800}, {x: WORLD_WIDTH-800, y: 800},
+              {x: 800, y: WORLD_HEIGHT-800}, {x: WORLD_WIDTH-800, y: WORLD_HEIGHT-800},
+              {x: WORLD_WIDTH/2, y: WORLD_HEIGHT/2}
+            ];
+            t.reconTarget = points[Math.floor(Math.random() * points.length)];
+          }
+          targetPoint = t.reconTarget;
         } else if (isCommanded && activeCmd === CommandType.ATTACK) {
           state = AIState.ATTACK_CORE; targetPoint = enemyBase.pos;
         } else {
@@ -1055,8 +1202,8 @@ const GameCanvas: React.FC<Props> = ({
         }
 
         const dirAngle = getAngle(t.pos, targetPoint);
-        // 增加采样密度，覆盖全方位，特别加强前方视野
-        const sampleDegs = [0, 5, -5, 10, -10, 15, -15, 20, -20, 25, -25, 30, -30, 40, -40, 50, -50, 60, -60, 75, -75, 90, -90, 120, -120, 150, -150, 180];
+        // 优化：显著减少采样密度，从 28 个减少到 12 个，降低计算开销
+        const sampleDegs = [0, 15, -15, 30, -30, 60, -60, 90, -90, 135, -135, 180];
         let bx = 0, by = 0, totalW = 0;
         
         // 判定停滞：如果位置几乎没动，累加 stuckTimer
@@ -1081,6 +1228,9 @@ const GameCanvas: React.FC<Props> = ({
         let frontBlocked = false;
         let frontDist = Infinity;
 
+        // 优化：在探测开始前预先获取附近的墙体，大幅减少循环内的过滤操作
+        const localWalls = getNearbyWalls(t.pos, TANK_SIZE * 7);
+
         sampleDegs.forEach(d => {
            const sA = dirAngle + (d * Math.PI / 180);
            // 增加探测深度：近、中、远、超远
@@ -1104,8 +1254,8 @@ const GameCanvas: React.FC<Props> = ({
              const dist = dists[i];
              const lookPos = { x: t.pos.x + Math.cos(sA) * dist, y: t.pos.y + Math.sin(sA) * dist };
              
-             // 1. 检查墙体碰撞
-             const wallHit = next.walls.find(w => w.type !== WallType.WATER && checkCollision({pos: lookPos, size: TANK_SIZE * 0.9, id: ''}, w));
+             // 1. 检查墙体碰撞 - 优化：使用局部预取的墙体列表
+             const wallHit = localWalls.find(w => w.type !== WallType.WATER && w.type !== WallType.SWAMP && checkCollision({pos: lookPos, size: TANK_SIZE * 0.9, id: ''}, w));
              
              if (wallHit && Math.abs(d) < 25) {
                frontBlocked = true;
@@ -1179,7 +1329,8 @@ const GameCanvas: React.FC<Props> = ({
             let count = 0;
             [1.5, 2.5, 3.5].forEach(distMult => {
               const p = { x: t.pos.x + Math.cos(angle) * TANK_SIZE * distMult, y: t.pos.y + Math.sin(angle) * TANK_SIZE * distMult };
-              if (next.walls.some(w => w.type !== WallType.WATER && checkCollision({pos: p, size: TANK_SIZE, id: ''}, w))) count++;
+              // 优化：使用局部预取的墙体列表
+              if (localWalls.some(w => w.type !== WallType.WATER && w.type !== WallType.SWAMP && checkCollision({pos: p, size: TANK_SIZE, id: ''}, w))) count++;
             });
             return count;
           };
@@ -1203,7 +1354,8 @@ const GameCanvas: React.FC<Props> = ({
             let clearDist = 0;
             for (let d = 1; d <= 4; d++) {
               const testP = { x: t.pos.x + Math.cos(a) * TANK_SIZE * d, y: t.pos.y + Math.sin(a) * TANK_SIZE * d };
-              if (next.walls.some(w => w.type !== WallType.WATER && checkCollision({ ...t, pos: testP }, w)) || isOutOfBounds(testP, TANK_SIZE)) {
+              // 优化：使用局部预取的墙体列表
+              if (localWalls.some(w => w.type !== WallType.WATER && checkCollision({ ...t, pos: testP }, w)) || isOutOfBounds(testP, TANK_SIZE)) {
                 break;
               }
               clearDist = d;
@@ -1269,7 +1421,8 @@ const GameCanvas: React.FC<Props> = ({
             x: t.pos.x + Math.cos(t.rotation) * 150,
             y: t.pos.y + Math.sin(t.rotation) * 150
           };
-          const breakableWall = next.walls.find(w => 
+          // 优化：使用局部预取的墙体列表
+          const breakableWall = localWalls.find(w => 
             (w.type === WallType.GLASS || w.type === WallType.MUD || w.type === WallType.STONE || w.type === WallType.IRON) && 
             getDistance(lookAheadPos, w.pos) < 100
           );
@@ -1301,18 +1454,46 @@ const GameCanvas: React.FC<Props> = ({
             }
             
             next.bullets.push({ id: `ba-${t.id}-${now}`, ownerId: t.id, team: t.team, pos: { ...t.pos }, rotation: t.turretRotation, speed: currentBulletSpeed, size: BULLET_SIZE, damage: BULLET_DAMAGE });
+            
+            // 枪口闪光
+            next.effects.push({
+              id: `eff-muzzle-${t.id}-${now}`,
+              pos: { 
+                x: t.pos.x + Math.cos(t.turretRotation) * TANK_SIZE, 
+                y: t.pos.y + Math.sin(t.turretRotation) * TANK_SIZE 
+              },
+              size: 30,
+              type: EffectType.MUZZLE_FLASH,
+              startTime: now,
+              duration: 100,
+              rotation: t.turretRotation
+            });
+
             t.lastShot = now;
           }
         } else { t.turretRotation = lerpAngle(t.turretRotation, t.rotation, 0.1); }
       };
 
-      next.allies.forEach((a, i) => runAI(a, i));
-      next.enemies.forEach((e, i) => runAI(e, i));
-      if (next.isAIControlled) runAI(next.player, 999);
+      // 优化：分帧执行 AI 逻辑。每个坦克每 3 帧运行一次 AI 决策，显著降低每帧的 CPU 压力
+      const runAIOptimized = (t: Tank, i: number) => {
+        // 使用 frameCountRef 和坦克索引来分摊计算
+        if ((frameCountRef.current + i) % 3 === 0) {
+          runAI(t, i);
+        } else {
+          // 在不运行完整 AI 的帧，只进行基础移动和射击逻辑（可选，为了丝滑性这里保留 moveTank 调用）
+          // 或者干脆跳过，因为位置更新已经在 moveTank 中处理了
+        }
+      };
+
+      next.allies.forEach((a, i) => runAIOptimized(a, i));
+      next.enemies.forEach((e, i) => runAIOptimized(e, i + next.allies.length));
+      if (next.isAIControlled) runAIOptimized(next.player, 999);
 
       // 拾取物资逻辑
       next.items = next.items.filter(item => {
-        const collectingTank = allTanks.find(t => t.health > 0 && checkCollision(t, item));
+        // 优化：使用 getNearbyTanks 代替全量扫描
+        const nearbyTanks = getNearbyTanks(item.pos, TANK_SIZE * 2);
+        const collectingTank = nearbyTanks.find(t => t.health > 0 && checkCollision(t, item));
         if (collectingTank) {
           if (!collectingTank.buffs) collectingTank.buffs = {};
           
@@ -1339,11 +1520,20 @@ const GameCanvas: React.FC<Props> = ({
       });
 
       next.bullets = next.bullets.filter(b => {
-        b.pos.x += Math.cos(b.rotation) * b.speed * dt; b.pos.y += Math.sin(b.rotation) * b.speed * dt;
+        const nearbyWalls = getNearbyWalls(b.pos, BULLET_SIZE * 5);
+        const inWater = nearbyWalls.some(w => w.type === WallType.WATER && checkCollision(b, w));
+        const inSwamp = nearbyWalls.some(w => w.type === WallType.SWAMP && checkCollision(b, w));
+        let currentSpeed = b.speed;
+        if (inWater) currentSpeed *= BULLET_WATER_SLOW_FACTOR;
+        if (inSwamp) currentSpeed *= BULLET_SWAMP_SLOW_FACTOR;
+
+        b.pos.x += Math.cos(b.rotation) * currentSpeed * dt; b.pos.y += Math.sin(b.rotation) * currentSpeed * dt;
         if (isOutOfBounds(b.pos, BULLET_SIZE, WORLD_WIDTH, WORLD_HEIGHT)) return false;
         
-        for (const w of next.walls) {
-          if (w.type !== WallType.WATER && checkCollision(b, w)) {
+        // 优化：使用空间网格加速子弹与墙体的碰撞检测
+        // 复用之前获取的 nearbyWalls，如果范围不够大，可以稍微调整
+        for (const w of nearbyWalls) {
+          if (w.type !== WallType.WATER && w.type !== WallType.SWAMP && checkCollision(b, w)) {
             // 反弹逻辑
             if (w.type === WallType.REBOUND) {
               const dx = b.pos.x - w.pos.x;
@@ -1358,6 +1548,15 @@ const GameCanvas: React.FC<Props> = ({
             if (w.type !== WallType.BULLETPROOF) {
               w.health -= 1; 
               if (w.health <= 0) {
+                // 墙体破坏效果：大爆炸 + 碎片
+                next.effects.push({
+                  id: `eff-exp-w-${w.id}-${now}`,
+                  pos: { ...w.pos },
+                  size: w.size * 1.2,
+                  type: EffectType.EXPLOSION,
+                  startTime: now,
+                  duration: 400
+                });
                 next.effects.push({
                   id: `eff-dest-${w.id}-${now}`,
                   pos: { ...w.pos },
@@ -1370,10 +1569,20 @@ const GameCanvas: React.FC<Props> = ({
                          w.type === WallType.MUD ? '#78350f' : '#bae6fd'
                 });
               } else {
+                // 击中墙体效果：火花
+                next.effects.push({
+                  id: `eff-spark-${w.id}-${now}`,
+                  pos: { ...b.pos },
+                  size: 15,
+                  type: EffectType.SPARK,
+                  startTime: now,
+                  duration: 200,
+                  color: w.type === WallType.STONE ? '#cbd5e1' : '#fff'
+                });
                 next.effects.push({
                   id: `eff-hit-${w.id}-${now}`,
                   pos: { ...b.pos },
-                  size: 20,
+                  size: 25,
                   type: EffectType.HIT,
                   startTime: now,
                   duration: 300,
@@ -1385,20 +1594,39 @@ const GameCanvas: React.FC<Props> = ({
           }
         }
 
-        for (const t of allTanks) {
+        // 优化：使用空间网格加速子弹与坦克的碰撞检测
+        const nearbyTanks = getNearbyTanks(b.pos, TANK_SIZE * 2);
+        for (const t of nearbyTanks) {
           if (t.health > 0 && t.id !== b.ownerId && !isSameSide(t.team, b.team) && checkCollision(b, t)) {
             // 计算伤害 Buff 和 抗性 Buff
-            const owner = allTanks.find(at => at.id === b.ownerId);
+            const owner = tankMap.get(b.ownerId);
             let finalDamage = b.damage;
             
             // 击中坦克的爆炸效果
             next.effects.push({
               id: `eff-exp-${t.id}-${now}`,
               pos: { ...b.pos },
-              size: 50,
+              size: 60,
               type: EffectType.EXPLOSION,
               startTime: now,
               duration: 500
+            });
+            next.effects.push({
+              id: `eff-sw-${t.id}-${now}`,
+              pos: { ...b.pos },
+              size: 80,
+              type: EffectType.SHOCKWAVE,
+              startTime: now,
+              duration: 300
+            });
+            next.effects.push({
+              id: `eff-spark-t-${t.id}-${now}`,
+              pos: { ...b.pos },
+              size: 20,
+              type: EffectType.SPARK,
+              startTime: now,
+              duration: 250,
+              color: '#fbbf24'
             });
             
             // 攻击者有伤害 Buff
@@ -1442,23 +1670,68 @@ const GameCanvas: React.FC<Props> = ({
             t.recentDamagers = t.recentDamagers.filter(d => now - d.time < 10000);
 
             if (t.health <= 0) { 
-              const killer = allTanks.find(at => at.id === b.ownerId); 
+              // 坦克销毁：大爆炸、多重冲击波、烟雾和碎片
+              next.effects.push({
+                id: `eff-tank-exp-${t.id}-${now}`,
+                pos: { ...t.pos },
+                size: TANK_SIZE * 2.5,
+                type: EffectType.EXPLOSION,
+                startTime: now,
+                duration: 1000
+              });
+              next.effects.push({
+                id: `eff-tank-sw-${t.id}-${now}`,
+                pos: { ...t.pos },
+                size: TANK_SIZE * 3.5,
+                type: EffectType.SHOCKWAVE,
+                startTime: now,
+                duration: 600
+              });
+              next.effects.push({
+                id: `eff-tank-dest-${t.id}-${now}`,
+                pos: { ...t.pos },
+                size: TANK_SIZE * 2,
+                type: EffectType.DESTRUCTION,
+                startTime: now,
+                duration: 1200,
+                color: t.color
+              });
+              // 增加一些残留烟雾
+              for (let i = 0; i < 3; i++) {
+                next.effects.push({
+                  id: `eff-tank-smoke-${t.id}-${now}-${i}`,
+                  pos: { 
+                    x: t.pos.x + (Math.random() - 0.5) * 40, 
+                    y: t.pos.y + (Math.random() - 0.5) * 40 
+                  },
+                  size: 40 + Math.random() * 40,
+                  type: EffectType.SMOKE,
+                  startTime: now + i * 100,
+                  duration: 1500 + Math.random() * 1000
+                });
+              }
+
+              const killer = tankMap.get(b.ownerId); 
               if (killer) { 
                 killer.kills += 1; 
                 killer.score += 100; 
                 
-                // 击败一个坦克可以得到50个金币
+                // 击退一个坦克可以得到50个金币
                 if (isSameSide(killer.team, Team.ALLY)) {
                   next.gold += 50;
                 } else {
                   next.enemyGold += 50;
                 }
                 
+                // 重要：立即同步金币变动到 React 状态，防止被异步 AI 更新覆盖
+                setGameState({ ...next });
+                lastOnStateUpdateRef.current = now;
+                
                 // 助攻逻辑：所有在 10 秒内伤害过该坦克且不是击杀者的队友
                 if (t.recentDamagers) {
                   t.recentDamagers.forEach(rd => {
                     if (rd.id !== b.ownerId) {
-                      const assistant = allTanks.find(at => at.id === rd.id);
+                      const assistant = tankMap.get(rd.id);
                       if (assistant && isSameSide(assistant.team, b.team)) {
                         assistant.assists += 1;
                         assistant.score += 50;
@@ -1476,61 +1749,68 @@ const GameCanvas: React.FC<Props> = ({
         return true;
       });
 
-      next.walls = next.walls.filter(w => w.health > 0);
-      // 清理过期视觉效果
-      next.effects = next.effects.filter(eff => now - eff.startTime < eff.duration);
+      if (frameCountRef.current % 30 === 0) {
+        next.walls = next.walls.filter(w => w.health > 0);
+        // 清理过期视觉效果
+        next.effects = next.effects.filter(eff => now - eff.startTime < eff.duration);
+      }
+
       next.beds.forEach(bed => {
-        const defenders = allTanks.some(t => t.health > 0 && isSameSide(t.team, bed.team) && getDistance(t.pos, bed.pos) < CAPTURE_RADIUS);
-        if (defenders) bed.captureProgress = Math.max(0, bed.captureProgress - dt * 2500);
-        else {
-          const attackers = allTanks.filter(t => t.health > 0 && !isSameSide(t.team, bed.team) && getDistance(t.pos, bed.pos) < CAPTURE_RADIUS);
-          if (attackers.length > 0) {
-            bed.captureProgress += dt * 1000;
-            bed.capturingTeam = isSameSide(attackers[0].team, Team.ALLY) ? Team.ALLY : Team.ENEMY;
-            if (bed.captureProgress >= CAPTURE_TIME_REQUIRED) { 
-              next.isGameOver = true; 
-              next.winner = bed.capturingTeam; 
+        // 基地占领逻辑稍微节流，每 2 帧处理一次以平衡性能和顺滑度
+        if (frameCountRef.current % 2 === 0) {
+          const nearbyTanks = getNearbyTanks(bed.pos, CAPTURE_RADIUS + 100);
+          const defenders = nearbyTanks.some(t => t.health > 0 && isSameSide(t.team, bed.team) && getDistance(t.pos, bed.pos) < CAPTURE_RADIUS);
+          if (defenders) bed.captureProgress = Math.max(0, bed.captureProgress - dt * 2500 * 2); // 乘以 2 因为是每 2 帧执行一次
+          else {
+            const attackers = nearbyTanks.filter(t => t.health > 0 && !isSameSide(t.team, bed.team) && getDistance(t.pos, bed.pos) < CAPTURE_RADIUS);
+            if (attackers.length > 0) {
+              bed.captureProgress += dt * 1000 * 2;
+              bed.capturingTeam = isSameSide(attackers[0].team, Team.ALLY) ? Team.ALLY : Team.ENEMY;
+              if (bed.captureProgress >= CAPTURE_TIME_REQUIRED) { 
+                next.isGameOver = true; 
+                next.winner = bed.capturingTeam; 
 
-              // AI 记忆与学习逻辑
-              if (next.isMemoryEnabled && !isReflectingRef.current) {
-                isReflectingRef.current = true;
-                const battleRecord = {
-                  id: `battle-${Date.now()}`,
-                  timestamp: Date.now(),
-                  winner: next.winner,
-                  playerStats: {
-                    kills: next.player.kills,
-                    score: next.player.score,
-                    deathCount: 0 // 暂时不记录死亡次数
-                  },
-                  dominantStrategy: next.winner === Team.ALLY ? next.currentCommand : next.enemyCommand
-                };
+                // AI 记忆与学习逻辑
+                if (next.isMemoryEnabled && !isReflectingRef.current) {
+                  isReflectingRef.current = true;
+                  const battleRecord = {
+                    id: `battle-${Date.now()}`,
+                    timestamp: Date.now(),
+                    winner: next.winner,
+                    playerStats: {
+                      kills: next.player.kills,
+                      score: next.player.score,
+                      deathCount: 0 // 暂时不记录死亡次数
+                    },
+                    dominantStrategy: next.winner === Team.ALLY ? next.currentCommand : next.enemyCommand
+                  };
 
-                // 异步进行战后反思
-                reflectOnBattle(battleRecord, next.knowledgeBase!).then(reflection => {
-                  setGameState(prev => {
-                    if (!prev.knowledgeBase) return prev;
-                    let updatedKb = memoryService.addBattleRecord(prev.knowledgeBase, battleRecord);
-                    
-                    if (reflection.learnedTactic) {
-                      updatedKb = memoryService.addLearnedTactic(updatedKb, reflection.learnedTactic);
-                    }
-                    if (reflection.playerPattern) {
-                      updatedKb = memoryService.addPlayerPattern(updatedKb, reflection.playerPattern);
-                    }
-                    if (reflection.innovation) {
-                      updatedKb = memoryService.addInnovation(updatedKb, reflection.innovation);
-                    }
-                    
-                    return { ...prev, knowledgeBase: updatedKb };
+                  // 异步进行战后反思
+                  reflectOnBattle(battleRecord, next.knowledgeBase!).then(reflection => {
+                    setGameState(prev => {
+                      if (!prev.knowledgeBase) return prev;
+                      let updatedKb = memoryService.addBattleRecord(prev.knowledgeBase, battleRecord);
+                      
+                      if (reflection.learnedTactic) {
+                        updatedKb = memoryService.addLearnedTactic(updatedKb, reflection.learnedTactic);
+                      }
+                      if (reflection.playerPattern) {
+                        updatedKb = memoryService.addPlayerPattern(updatedKb, reflection.playerPattern);
+                      }
+                      if (reflection.innovation) {
+                        updatedKb = memoryService.addInnovation(updatedKb, reflection.innovation);
+                      }
+                      
+                      return { ...prev, knowledgeBase: updatedKb };
+                    });
                   });
-                });
+                }
+                
+                setGameState(next);
+                onStateUpdate(next);
               }
-              
-              setGameState(next);
-              onStateUpdate(next);
-            }
-          } else { bed.captureProgress = Math.max(0, bed.captureProgress - dt * 3500); }
+            } else { bed.captureProgress = Math.max(0, bed.captureProgress - dt * 3500 * 2); }
+          }
         }
       });
       const handleRespawn = (t: Tank) => {
@@ -1539,7 +1819,8 @@ const GameCanvas: React.FC<Props> = ({
             t.respawnTimer = RESPAWN_DELAY;
           } else {
             t.respawnTimer -= dt * 1000;
-            if (t.respawnTimer <= 0) {
+            // 只有在 timer 快到期或者每 10 帧时才进行复杂的重生点检查
+            if (t.respawnTimer <= 0 && frameCountRef.current % 10 === 0) {
               // 查找安全的重生点，避免刷新在其他坦克上
               let safePos = { ...t.spawnPos };
               let foundSafe = false;
@@ -1550,7 +1831,9 @@ const GameCanvas: React.FC<Props> = ({
                     x: t.spawnPos.x + Math.cos(angle) * radius,
                     y: t.spawnPos.y + Math.sin(angle) * radius
                   };
-                  const isBlocked = next.walls.some(w => w.type !== WallType.WATER && checkCollision({ ...t, pos: testPos }, w)) ||
+                  // 优化：使用空间网格加速碰撞检测
+                  const nearbyWalls = getNearbyWalls(testPos, TANK_SIZE);
+                  const isBlocked = nearbyWalls.some(w => w.type !== WallType.WATER && checkCollision({ ...t, pos: testPos }, w)) ||
                                   allTanks.some(other => other.id !== t.id && other.health > 0 && checkCollision({ ...t, pos: testPos }, other)) ||
                                   isOutOfBounds(testPos, TANK_SIZE, WORLD_WIDTH, WORLD_HEIGHT);
                   if (!isBlocked) {
@@ -1571,7 +1854,8 @@ const GameCanvas: React.FC<Props> = ({
       handleRespawn(next.player); next.allies.forEach(handleRespawn); next.enemies.forEach(handleRespawn);
       
       stateRef.current = next;
-      if (now - lastOnStateUpdateRef.current > 100) {
+      // 进一步降低 React 状态同步频率，从 100ms 提高到 150ms，显著减少渲染压力
+      if (now - lastOnStateUpdateRef.current > 150) {
         setGameState(next);
         onStateUpdate(next);
         lastOnStateUpdateRef.current = now;
@@ -1604,19 +1888,24 @@ const GameCanvas: React.FC<Props> = ({
   useEffect(() => {
     const kd = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase();
-      if (key === 'e' && !e.repeat) {
-        setGameState(prev => ({ ...prev, activeMenu: !prev.activeMenu, activeTab: 'COMMANDS' }));
-      }
-      if (key === 'z' && !e.repeat) {
-        setGameState(prev => {
-          // 如果菜单已经打开且当前是商城，则关闭菜单；否则打开商城
-          const shouldClose = prev.activeMenu && prev.activeTab === 'SHOP';
-          return { 
-            ...prev, 
-            activeMenu: !shouldClose, 
-            activeTab: 'SHOP' 
-          };
-        });
+      if (!e.repeat) {
+        let targetTab: 'SHOP' | 'SCOREBOARD' | 'SETTINGS' | 'COMMANDS' | null = null;
+        if (key === 'j') targetTab = 'SHOP';
+        else if (key === 'p') targetTab = 'SCOREBOARD';
+        else if (key === 'z') targetTab = 'SETTINGS';
+        else if (key === 'l' || key === 'e') targetTab = 'COMMANDS';
+
+        if (targetTab) {
+          setGameState(prev => {
+            const isSameTab = prev.activeTab === targetTab;
+            const shouldClose = prev.activeMenu && isSameTab;
+            return { 
+              ...prev, 
+              activeMenu: !shouldClose, 
+              activeTab: targetTab 
+            };
+          });
+        }
       }
       keys.current.add(key);
     };
@@ -1647,17 +1936,28 @@ const GameCanvas: React.FC<Props> = ({
 
     const vw = canvas.width, vh = canvas.height;
     ctx.clearRect(0, 0, vw, vh);
-    ctx.save(); ctx.translate(-player.pos.x + vw/2, -player.pos.y + vh/2);
     
-    // 优化后的草坪渲染
-    // 1. 绘制基础底色
+    // 计算视口在世界坐标系中的范围 (Viewport Culling)
+    const viewX = player.pos.x - vw / 2;
+    const viewY = player.pos.y - vh / 2;
+    const margin = 100; // 渲染边缘缓冲，防止物体突然消失
+    
+    ctx.save(); ctx.translate(-viewX, -viewY);
+    
+    // 优化后的草坪渲染：仅绘制视口可见区域
     ctx.fillStyle = COLORS.GROUND; 
-    ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+    // 只填充视口范围
+    ctx.fillRect(viewX, viewY, vw, vh);
 
-    // 2. 绘制深浅交替的草坪方块 (棋盘格纹理)
+    // 2. 绘制深浅交替的草坪方块 (棋盘格纹理) - 仅限视口内
     const gridSize = 200;
-    for (let x = 0; x < WORLD_WIDTH; x += gridSize) {
-      for (let y = 0; y < WORLD_HEIGHT; y += gridSize) {
+    const startX = Math.floor(viewX / gridSize) * gridSize;
+    const startY = Math.floor(viewY / gridSize) * gridSize;
+    const endX = viewX + vw;
+    const endY = viewY + vh;
+
+    for (let x = startX; x < endX; x += gridSize) {
+      for (let y = startY; y < endY; y += gridSize) {
         if ((Math.floor(x / gridSize) + Math.floor(y / gridSize)) % 2 === 0) {
           ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
           ctx.fillRect(x, y, gridSize, gridSize);
@@ -1665,22 +1965,26 @@ const GameCanvas: React.FC<Props> = ({
       }
     }
 
-    // 3. 绘制随机草丛细节 (使用固定步长和伪随机偏移)
+    // 3. 绘制随机草丛细节 - 仅限视口内
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
     ctx.lineWidth = 2;
     const detailDensity = 150;
-    for (let x = detailDensity / 2; x < WORLD_WIDTH; x += detailDensity) {
-      for (let y = detailDensity / 2; y < WORLD_HEIGHT; y += detailDensity) {
-        // 使用坐标产生的伪随机数，保证草丛位置固定
+    const detailStartX = Math.floor(viewX / detailDensity) * detailDensity;
+    const detailStartY = Math.floor(viewY / detailDensity) * detailDensity;
+
+    for (let x = detailStartX; x < endX; x += detailDensity) {
+      for (let y = detailStartY; y < endY; y += detailDensity) {
+        // 只有在世界范围内才绘制
+        if (x < 0 || y < 0 || x > WORLD_WIDTH || y > WORLD_HEIGHT) continue;
+        
         const seed = (x * 12345 + y * 67890) % 100;
-        if (seed > 40) { // 60% 的概率绘制草簇
+        if (seed > 40) {
           const offsetX = (seed % 30) - 15;
           const offsetY = ((seed * 7) % 30) - 15;
           const px = x + offsetX;
           const py = y + offsetY;
           
           ctx.beginPath();
-          // 绘制三根小草
           ctx.moveTo(px - 4, py + 4); ctx.lineTo(px - 2, py - 4);
           ctx.moveTo(px, py + 5); ctx.lineTo(px, py - 6);
           ctx.moveTo(px + 4, py + 4); ctx.lineTo(px + 2, py - 4);
@@ -1703,14 +2007,217 @@ const GameCanvas: React.FC<Props> = ({
     ctx.fillRect(WORLD_WIDTH - 400, WORLD_HEIGHT - 420, 400, 40);
     ctx.fillRect(WORLD_WIDTH - 420, WORLD_HEIGHT - 400, 40, 400);
 
+    // 辅助函数：检查物体是否在视口内 (Viewport Culling)
+    const isInView = (x: number, y: number, size: number) => {
+      return x + size > viewX - margin && 
+             x - size < viewX + vw + margin && 
+             y + size > viewY - margin && 
+             y - size < viewY + vh + margin;
+    };
+
     beds.forEach(bed => {
-      const isAlly = isSameSide(bed.team, Team.ALLY); const color = isAlly ? COLORS.ALLY : COLORS.ENEMY;
-      ctx.beginPath(); ctx.arc(bed.pos.x, bed.pos.y, CAPTURE_RADIUS, 0, Math.PI * 2); ctx.strokeStyle = color + '22'; ctx.lineWidth = 2; ctx.stroke();
-      ctx.beginPath(); ctx.arc(bed.pos.x, bed.pos.y, bed.size/2, 0, Math.PI * 2); ctx.fillStyle = color + '66'; ctx.fill(); ctx.strokeStyle = color; ctx.stroke();
-      if (bed.captureProgress > 0) { ctx.beginPath(); ctx.arc(bed.pos.x, bed.pos.y, bed.size/2 + 30, -Math.PI/2, -Math.PI/2 + (Math.PI*2 * (bed.captureProgress/5000))); ctx.strokeStyle = bed.capturingTeam === Team.ALLY ? COLORS.ALLY : COLORS.ENEMY; ctx.lineWidth = 15; ctx.stroke(); }
+      if (!isInView(bed.pos.x, bed.pos.y, CAPTURE_RADIUS)) return;
+      const isAlly = isSameSide(bed.team, Team.ALLY); 
+      const color = isAlly ? COLORS.ALLY : COLORS.ENEMY;
+      const x = bed.pos.x;
+      const y = bed.pos.y;
+      const size = bed.size;
+
+      // 1. 占领范围外圈 (雷达扫描感)
+      ctx.beginPath(); 
+      ctx.arc(x, y, CAPTURE_RADIUS, 0, Math.PI * 2); 
+      ctx.strokeStyle = color + '22'; 
+      ctx.lineWidth = 2; 
+      ctx.stroke();
+      
+      // 动态扫描环
+      const scanRadius = (now / 20) % CAPTURE_RADIUS;
+      ctx.beginPath();
+      ctx.arc(x, y, scanRadius, 0, Math.PI * 2);
+      ctx.strokeStyle = color + '11';
+      ctx.stroke();
+
+      // 2. 基地建筑造型
+      ctx.save();
+      ctx.translate(x, y);
+      
+      // a. 外部加固底座 (多层结构增加厚重感)
+      // 第一层：最底层大八角形
+      ctx.beginPath();
+      const sides = 8;
+      const r = size / 2;
+      for (let i = 0; i < sides; i++) {
+        const angle = (i * Math.PI * 2) / sides;
+        const px = Math.cos(angle) * (r * 1.2);
+        const py = Math.sin(angle) * (r * 1.2);
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = '#0f172a'; // 极深蓝黑
+      ctx.fill();
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // 第二层：主八角形
+      ctx.beginPath();
+      for (let i = 0; i < sides; i++) {
+        const angle = (i * Math.PI * 2) / sides;
+        const px = Math.cos(angle) * r;
+        const py = Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = '#1e293b'; 
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 4;
+      ctx.stroke();
+
+      // b. 内部结构 - 区分我方和敌方
+      if (isAlly) {
+        // 我方基地：科技防御感 (圆顶+天线)
+        // 装饰天线
+        for (let i = 0; i < 4; i++) {
+          const angle = (i * Math.PI * 2) / 4 + Math.PI / 4;
+          const ax = Math.cos(angle) * r;
+          const ay = Math.sin(angle) * r;
+          ctx.beginPath();
+          ctx.moveTo(ax, ay);
+          ctx.lineTo(ax * 1.3, ay * 1.3);
+          ctx.strokeStyle = '#94a3b8';
+          ctx.lineWidth = 3;
+          ctx.stroke();
+          // 天线顶端小圆点
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(ax * 1.3, ay * 1.3, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // 半透明圆顶
+        ctx.beginPath();
+        ctx.arc(0, 0, r * 0.8, 0, Math.PI * 2);
+        const domeGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, r * 0.8);
+        domeGrad.addColorStop(0, color + '22');
+        domeGrad.addColorStop(1, color + '66');
+        ctx.fillStyle = domeGrad;
+        ctx.fill();
+        ctx.strokeStyle = color + 'AA';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      } else {
+        // 敌方基地：军事要塞感 (棱角+炮管)
+        // 装饰性炮管
+        for (let i = 0; i < 4; i++) {
+          const angle = (i * Math.PI * 2) / 4;
+          ctx.save();
+          ctx.rotate(angle);
+          ctx.fillStyle = '#475569';
+          ctx.fillRect(r * 0.6, -10, r * 0.7, 20); // 炮管
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(r * 0.6, -10, r * 0.7, 20);
+          ctx.restore();
+        }
+
+        // 核心加固装甲
+        ctx.beginPath();
+        ctx.rect(-r*0.5, -r*0.5, r, r);
+        ctx.fillStyle = '#334155';
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+
+      // c. 中心能量核心 (带呼吸灯效果)
+      const coreSize = Math.max(0.1, size * 0.4);
+      const isCapturing = bed.captureProgress > 0;
+      const pulseSpeed = isCapturing ? 100 : 400; // 被占领时闪烁更快
+      const pulse = Math.sin(now / pulseSpeed) * 0.3 + 0.7;
+      
+      const coreGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(0.1, coreSize/2));
+      if (isCapturing && (now % 200 < 100)) {
+        coreGrad.addColorStop(0, '#fff');
+        coreGrad.addColorStop(0.5, '#facc15'); // 警告黄
+        coreGrad.addColorStop(1, '#000');
+      } else {
+        coreGrad.addColorStop(0, '#fff');
+        coreGrad.addColorStop(0.3, color);
+        coreGrad.addColorStop(1, '#000');
+      }
+      
+      ctx.save();
+      ctx.scale(pulse, pulse);
+      ctx.fillStyle = coreGrad;
+      ctx.beginPath();
+      ctx.arc(0, 0, coreSize/2, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // 核心光晕
+      ctx.globalAlpha = 0.5;
+      ctx.shadowBlur = isCapturing ? 30 : 20;
+      ctx.shadowColor = isCapturing ? '#facc15' : color;
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
+
+      // d. 基地文字标识
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 24px Orbitron, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.shadowBlur = 4;
+      ctx.shadowColor = '#000';
+      ctx.fillText(isAlly ? 'ALLY HQ' : 'ENEMY HQ', 0, -r * 1.5);
+      ctx.shadowBlur = 0;
+
+      // e. 占领时的火花效果
+      if (isCapturing) {
+        for (let i = 0; i < 3; i++) {
+          const sparkAngle = Math.random() * Math.PI * 2;
+          const sparkDist = Math.random() * r;
+          const sx = Math.cos(sparkAngle) * sparkDist;
+          const sy = Math.sin(sparkAngle) * sparkDist;
+          ctx.fillStyle = '#facc15';
+          ctx.beginPath();
+          ctx.arc(sx, sy, 2 + Math.random() * 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      ctx.restore();
+
+      // 3. 占领进度条 (优化：双色进度条，显示谁在占领)
+      if (bed.captureProgress > 0) { 
+        // 进度条背景
+        ctx.beginPath();
+        ctx.arc(x, y, size/2 + 40, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+        ctx.lineWidth = 12;
+        ctx.stroke();
+
+        // 实际进度
+        ctx.beginPath(); 
+        ctx.arc(x, y, size/2 + 40, -Math.PI/2, -Math.PI/2 + (Math.PI*2 * (bed.captureProgress/5000))); 
+        ctx.strokeStyle = bed.capturingTeam === Team.ALLY ? COLORS.ALLY : COLORS.ENEMY; 
+        ctx.lineWidth = 12; 
+        ctx.lineCap = 'round';
+        ctx.stroke(); 
+
+        // 占领百分比文字
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 18px sans-serif';
+        ctx.textAlign = 'center';
+        const percent = Math.floor((bed.captureProgress / 5000) * 100);
+        ctx.fillText(`${percent}%`, x, y + size/2 + 70);
+      }
     });
     const drawTank = (t: Tank) => {
-      if (t.health <= 0) return;
+      if (t.health <= 0 || !isInView(t.pos.x, t.pos.y, TANK_SIZE * 2)) return;
       const isEnemy = !isSameSide(t.team, Team.ALLY); const isLeader = t.isLeader;
       ctx.save(); ctx.translate(t.pos.x, t.pos.y);
       ctx.save(); ctx.rotate(t.rotation);
@@ -1749,14 +2256,28 @@ const GameCanvas: React.FC<Props> = ({
       ctx.restore();
     };
     allies.forEach(drawTank); enemies.forEach(drawTank); drawTank(player);
-    walls.forEach(w => { 
-      const x = w.pos.x - w.size / 2;
-      const y = w.pos.y - w.size / 2;
-      const size = w.size;
+    // 优化后的墙体渲染：使用空间网格仅渲染视口内的墙体
+    const { grid, cellSize } = wallGridRef.current;
+    const minGX = Math.floor(viewX / cellSize);
+    const maxGX = Math.floor((viewX + vw) / cellSize);
+    const minGY = Math.floor(viewY / cellSize);
+    const maxGY = Math.floor((viewY + vh) / cellSize);
 
-      ctx.save();
-      
-      switch (w.type) {
+    for (let gx = minGX; gx <= maxGX; gx++) {
+      for (let gy = minGY; gy <= maxGY; gy++) {
+        const key = `${gx},${gy}`;
+        const cellWalls = grid[key];
+        if (!cellWalls) continue;
+
+        cellWalls.forEach(w => {
+          if (w.health <= 0) return;
+          const x = w.pos.x - w.size / 2;
+          const y = w.pos.y - w.size / 2;
+          const size = w.size;
+
+          ctx.save();
+          
+          switch (w.type) {
         case WallType.STONE:
           // 石头：增加渐变、倒角和更真实的裂纹
           const stoneGrad = ctx.createLinearGradient(x, y, x + size, y + size);
@@ -1792,7 +2313,7 @@ const GameCanvas: React.FC<Props> = ({
 
         case WallType.WATER:
           // 水域：多层波动、深浅渐变
-          const waterGrad = ctx.createRadialGradient(w.pos.x, w.pos.y, 5, w.pos.x, w.pos.y, size/1.2);
+          const waterGrad = ctx.createRadialGradient(w.pos.x, w.pos.y, 5, w.pos.x, w.pos.y, Math.max(5.1, size/1.2));
           waterGrad.addColorStop(0, '#2563eb');
           waterGrad.addColorStop(1, '#1e3a8a');
           ctx.fillStyle = waterGrad;
@@ -1817,8 +2338,8 @@ const GameCanvas: React.FC<Props> = ({
           break;
 
         case WallType.MUD:
-          // 泥地：不规则深色斑块、干裂纹理
-          ctx.fillStyle = '#78350f';
+          // 泥土墙：不规则深色斑块、干裂纹理
+          ctx.fillStyle = COLORS.MUD;
           ctx.fillRect(x, y, size, size);
           
           // 泥浆斑块
@@ -1838,6 +2359,12 @@ const GameCanvas: React.FC<Props> = ({
           ctx.strokeStyle = 'rgba(0,0,0,0.1)';
           ctx.lineWidth = 1;
           ctx.stroke();
+          break;
+
+        case WallType.SWAMP:
+          // 泥沼：纯棕色，无花纹
+          ctx.fillStyle = COLORS.SWAMP;
+          ctx.fillRect(x, y, size, size);
           break;
 
         case WallType.GLASS:
@@ -1997,12 +2524,15 @@ const GameCanvas: React.FC<Props> = ({
       
       ctx.restore();
     });
+  }
+}
     // 强制重置全局透明度和合成模式，防止障碍物渲染污染后续绘制
     ctx.globalAlpha = 1.0;
     ctx.globalCompositeOperation = 'source-over';
     
     // 绘制视觉效果
     gameState.effects.forEach(eff => {
+      if (!isInView(eff.pos.x, eff.pos.y, eff.size)) return;
       ctx.save();
       ctx.translate(eff.pos.x, eff.pos.y);
       const progress = (now - eff.startTime) / eff.duration;
@@ -2010,43 +2540,119 @@ const GameCanvas: React.FC<Props> = ({
       ctx.globalAlpha = alpha;
 
       if (eff.type === EffectType.EXPLOSION) {
-        const radius = (eff.size / 2) * (0.5 + progress * 0.5);
-        const grad = ctx.createRadialGradient(0, 0, radius * 0.2, 0, 0, radius);
+        // 核心闪光
+        const coreRadius = (eff.size / 4) * (1 - progress);
+        if (coreRadius > 0) {
+          ctx.fillStyle = '#fff';
+          ctx.beginPath(); ctx.arc(0, 0, coreRadius, 0, Math.PI * 2); ctx.fill();
+        }
+
+        // 爆炸火球
+        const radius = Math.max(0.1, (eff.size / 2) * (0.3 + progress * 0.7));
+        const grad = ctx.createRadialGradient(0, 0, radius * 0.1, 0, 0, radius);
         grad.addColorStop(0, '#fff');
-        grad.addColorStop(0.3, '#fbbf24');
+        grad.addColorStop(0.2, '#fef08a');
+        grad.addColorStop(0.5, '#fbbf24');
+        grad.addColorStop(0.8, '#ea580c');
         grad.addColorStop(1, 'transparent');
         ctx.fillStyle = grad;
         ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI * 2); ctx.fill();
+
+        // 额外的火花粒子
+        if (progress < 0.5) {
+          ctx.fillStyle = '#fbbf24';
+          for (let i = 0; i < 5; i++) {
+            const angle = (i / 5) * Math.PI * 2 + progress * 10;
+            const d = radius * (0.5 + progress);
+            ctx.fillRect(Math.cos(angle) * d, Math.sin(angle) * d, 2, 2);
+          }
+        }
+      } else if (eff.type === EffectType.SHOCKWAVE) {
+        const radius = Math.max(0.1, (eff.size / 2) * progress);
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.8 * (1 - progress)})`;
+        ctx.lineWidth = 4 * (1 - progress);
+        ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI * 2); ctx.stroke();
       } else if (eff.type === EffectType.HIT) {
+        const s = Math.max(0.1, eff.size * (1 - progress));
         ctx.fillStyle = eff.color || '#fff';
-        const s = eff.size * (1 - progress);
+        ctx.rotate(progress * 5);
         ctx.fillRect(-s/2, -s/2, s, s);
+        // 击中时的十字闪光
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2 * (1 - progress);
+        ctx.beginPath();
+        ctx.moveTo(-s, 0); ctx.lineTo(s, 0);
+        ctx.moveTo(0, -s); ctx.lineTo(0, s);
+        ctx.stroke();
+      } else if (eff.type === EffectType.SPARK) {
+        const s = Math.max(0.1, eff.size * (1 - progress));
+        ctx.fillStyle = eff.color || '#fbbf24';
+        const angle = Math.atan2(eff.velocity?.y || 0, eff.velocity?.x || 0);
+        ctx.rotate(angle || (progress * 10));
+        ctx.fillRect(-s, -s/4, s * 2, s/2);
       } else if (eff.type === EffectType.DESTRUCTION) {
         ctx.fillStyle = eff.color || '#fff';
-        for (let i = 0; i < 8; i++) {
-          const angle = (i / 8) * Math.PI * 2 + progress * 2;
-          const dist = progress * eff.size;
-          const s = (eff.size / 5) * (1 - progress);
-          ctx.fillRect(Math.cos(angle) * dist - s/2, Math.sin(angle) * dist - s/2, s, s);
+        const particleCount = 12;
+        for (let i = 0; i < particleCount; i++) {
+          const angle = (i / particleCount) * Math.PI * 2 + (i * 137.5); // 使用黄金角增加随机感
+          const dist = progress * eff.size * (0.8 + Math.sin(i) * 0.2);
+          const s = Math.max(0.1, (eff.size / 6) * (1 - progress) * (0.5 + Math.cos(i) * 0.5));
+          ctx.save();
+          ctx.rotate(angle + progress * 5);
+          ctx.translate(dist, 0);
+          ctx.fillRect(-s/2, -s/2, s, s);
+          // 碎片边缘
+          ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(-s/2, -s/2, s, s);
+          ctx.restore();
         }
+      } else if (eff.type === EffectType.MUZZLE_FLASH) {
+        ctx.rotate(eff.rotation || 0);
+        const s = Math.max(0.1, eff.size * (1 - progress));
+        const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, s);
+        grad.addColorStop(0, '#fff');
+        grad.addColorStop(0.4, '#fef08a');
+        grad.addColorStop(1, 'transparent');
+        ctx.fillStyle = grad;
+        
+        // 绘制一个尖锐的闪光形状
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(s, -s/3);
+        ctx.lineTo(s * 1.5, 0);
+        ctx.lineTo(s, s/3);
+        ctx.closePath();
+        ctx.fill();
+      } else if (eff.type === EffectType.SMOKE) {
+        const s = Math.max(0.1, eff.size * (0.5 + progress * 1.5));
+        const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(0.1, s/2));
+        grad.addColorStop(0, `rgba(100, 100, 100, ${0.4 * (1 - progress)})`);
+        grad.addColorStop(1, 'transparent');
+        ctx.fillStyle = grad;
+        ctx.beginPath(); ctx.arc(0, 0, s/2, 0, Math.PI * 2); ctx.fill();
       }
       ctx.restore();
     });
     ctx.globalAlpha = 1.0;
 
-    bullets.forEach(b => { ctx.save(); ctx.translate(b.pos.x, b.pos.y); ctx.rotate(b.rotation); ctx.fillStyle = b.team === Team.ENEMY ? '#ef4444' : '#60a5fa'; ctx.fillRect(-b.size * 2, -b.size / 2, b.size * 4, b.size); ctx.restore(); });
+    bullets.forEach(b => { 
+      if (!isInView(b.pos.x, b.pos.y, b.size * 5)) return;
+      ctx.save(); ctx.translate(b.pos.x, b.pos.y); ctx.rotate(b.rotation); ctx.fillStyle = b.team === Team.ENEMY ? '#ef4444' : '#60a5fa'; ctx.fillRect(-b.size * 2, -b.size / 2, b.size * 4, b.size); ctx.restore(); 
+    });
     items.forEach(item => { 
+      if (!isInView(item.pos.x, item.pos.y, item.size)) return;
       ctx.save(); ctx.translate(item.pos.x, item.pos.y); 
       const color = ITEM_COLORS[item.type];
-      const gradient = ctx.createRadialGradient(0, 0, 5, 0, 0, item.size * 0.8);
+      const gradient = ctx.createRadialGradient(0, 0, 5, 0, 0, Math.max(0.1, item.size * 0.8));
       gradient.addColorStop(0, color);
       gradient.addColorStop(1, 'transparent');
       ctx.fillStyle = gradient;
       ctx.globalAlpha = 0.5 + Math.sin(now / 200) * 0.2;
-      ctx.beginPath(); ctx.arc(0, 0, item.size * 0.8, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(0, 0, Math.max(0, item.size * 0.8), 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = 1;
       ctx.fillStyle = color;
-      ctx.beginPath(); ctx.arc(0, 0, item.size / 2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(0, 0, Math.max(0, item.size / 2), 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
       ctx.beginPath(); ctx.arc(-item.size/6, -item.size/6, item.size/8, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
