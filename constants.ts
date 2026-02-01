@@ -45,10 +45,10 @@ export const SHOP_UPGRADES = {
   BUFF_INCREMENT: 0.2, // 每次提升 20%
 };
 
-export const PLAYER_SPEED = 450; // 手动操作速度适中
-export const AI_SPEED = 350;     // 普通盟友和敌方坦克速度较慢，突出玩家优势
-export const AI_AUTOPILOT_SPEED_MULT = 3.5; // AI 代打时速度极大提升，展现顶级 AI 的压制力
-export const BULLET_SPEED = 1400;
+export const PLAYER_SPEED = 550; // 稍微提升玩家手动操作速度
+export const AI_SPEED = 500;     // 大幅提升 AI 基础速度 (原 420)
+export const AI_AUTOPILOT_SPEED_MULT = 2.2; // 提升 AI 代打倍率 (原 1.4)，保持极速压制力
+export const BULLET_SPEED = 1800; // 配合坦克提速，大幅增加子弹初速 (原 1500)
 
 export const WATER_SLOW_FACTOR = 0.5;
 export const SWAMP_SLOW_FACTOR = 0.25;
@@ -61,6 +61,9 @@ export const CAPTURE_TIME_REQUIRED = 5000;
 export const RESPAWN_DELAY = 4000;
 
 export const BULLET_DAMAGE = 10; 
+export const LANDMINE_DAMAGE = 50;
+export const LANDMINE_SIZE = 25;
+export const LANDMINE_AOE_RADIUS = 150; // 地雷爆炸范围半径
 export const HEALTH_PACK_HEAL = 0; // 改为 0，回血通过持续回复实现
 export const HEALTH_PACK_REGEN_PER_SEC = 10; // 增加到 10，5 秒回 50
 export const HEALTH_PACK_REGEN_DURATION = 5; // 持续5秒
@@ -88,5 +91,5 @@ export const AI_CONFIG = {
   OLLAMA_API_BASE: '/api-ollama', // 使用 Vite 代理解决 CORS 问题
   OLLAMA_MODEL: 'gpt-oss:120b-cloud',
   USE_OLLAMA_FIRST: true,
-  REQUEST_TIMEOUT: 30000, // 保持 30 秒超时以确保稳定性
+  REQUEST_TIMEOUT: 90000, // 适配远程大模型更长的响应时间
 };

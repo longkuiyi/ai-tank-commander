@@ -31,6 +31,10 @@ export enum ControlMode {
   MOBILE = 'MOBILE'
 }
 
+export enum GameMode {
+  NORMAL = 'NORMAL'
+}
+
 export interface Vector2D {
   x: number;
   y: number;
@@ -105,6 +109,7 @@ export interface Tank extends GameObject {
   reverseTimer?: number;
   lastPos?: Vector2D;
   reconTarget?: Vector2D;
+  patrolIdx?: number;
   detourTimer?: number;
   detourSide?: number; // 1 for right, -1 for left
   lastFinalAngle?: number;
@@ -165,11 +170,17 @@ export interface TeamUpgrades {
   haste: number; // 永久急迫加成 (射速/子弹速度)
 }
 
+export interface Landmine extends GameObject {
+  team: Team;
+  ownerId: string;
+}
+
 export interface GameState {
   player: Tank;
   allies: Tank[];
   enemies: Tank[];
   bullets: Bullet[];
+  landmines: Landmine[];
   walls: Wall[];
   beds: Bed[];
   items: Item[]; // 替换原来的 healthPacks
@@ -180,23 +191,33 @@ export interface GameState {
   winner: Team | null;
   isPaused: boolean;
   activeMenu: boolean;
-  activeTab: 'SCOREBOARD' | 'COMMAND' | 'SETTINGS' | 'SHOP';
+  activeTab: 'SCOREBOARD' | 'COMMANDS' | 'SETTINGS' | 'SHOP';
   enemyActiveMenu: boolean;
-  enemyActiveTab: 'SCOREBOARD' | 'COMMAND' | 'SETTINGS' | 'SHOP';
+  enemyActiveTab: 'SCOREBOARD' | 'COMMANDS' | 'SETTINGS' | 'SHOP';
   currentCommand: CommandType;
   enemyCommand: CommandType;
   commandCount: number;
+  mousePos: Vector2D;
   isAIControlled: boolean;
   isAutoAimEnabled: boolean;
   isAutoFireEnabled: boolean;
   isMemoryEnabled: boolean; // 是否开启 AI 记忆功能
+  isPrivacyModeEnabled: boolean; // 隐私模式：不向外部 AI 发送战况
+  isPerfOverlayEnabled: boolean; // 性能监控：HUD 显示 FPS/卡顿信息
+  fps?: number;
+  longTaskCount?: number;
   controlMode: ControlMode;
+  gameMode: GameMode;
   gold: number; // Ally gold
+  landmineCount: number; // 玩家持有的地雷数量
   teamUpgrades: TeamUpgrades; // Ally team upgrades
   enemyGold: number;
   enemyTeamUpgrades: TeamUpgrades;
   knowledgeBase?: KnowledgeBase;
   tacticalAdvice?: string;
+  isAIConnected: boolean;
+  currentAIModel?: string; // 当前使用的 AI 模型
+  lastAIResponseTime?: number; // 上次 AI 响应时间（毫秒）
 }
 
 export interface BattleRecord {

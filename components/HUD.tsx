@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { GameState, Team, CommandType, ControlMode, Tank } from '../types';
-import { getTacticalAdvice } from '../services/geminiService';
+import { GameState, Team, CommandType, ControlMode } from '../types';
 import { SHOP_UPGRADES } from '../constants';
+import { t } from '../utils/i18n';
 
 interface Props {
   state: GameState;
@@ -14,6 +14,26 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
   const activeTab = state.activeTab || 'COMMANDS';
   const setActiveTab = (tab: 'COMMANDS' | 'SCOREBOARD' | 'SETTINGS' | 'SHOP') => {
     window.dispatchEvent(new CustomEvent('change-tab', { detail: tab }));
+  };
+
+  // 用于菜单面板切换动画（不引入额外依赖）
+  const [tabAnimKey, setTabAnimKey] = useState(0);
+  const [userApiKey, setUserApiKey] = useState(localStorage.getItem('VITE_GEMINI_API_KEY') || '');
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+
+  useEffect(() => {
+    setTabAnimKey(k => k + 1);
+  }, [activeTab, state.activeMenu]);
+
+  const saveApiKey = () => {
+    setSaveStatus('saving');
+    localStorage.setItem('VITE_GEMINI_API_KEY', userApiKey);
+    // 触发一个自定义事件，通知 geminiService 更新 Key
+    window.dispatchEvent(new CustomEvent('api-key-updated', { detail: userApiKey }));
+    setTimeout(() => {
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 2000);
+    }, 500);
   };
 
   // 摇杆逻辑
@@ -59,16 +79,17 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
 
   const enemyBed = state.beds.find(b => b.team === Team.ENEMY);
   const allyBed = state.beds.find(b => b.team === Team.ALLY);
+  const landmineCount = state.landmineCount || 0;
   const capturePercentEnemy = enemyBed ? Math.round((enemyBed.captureProgress / 5000) * 100) : 0;
   const capturePercentAlly = allyBed ? Math.round((allyBed.captureProgress / 5000) * 100) : 0;
 
   const commands = [
-    { k: '1', n: '全军突击', type: CommandType.ATTACK, color: 'text-red-400', desc: '集火歼敌' },
-    { k: '2', n: '占领据点', type: CommandType.CAPTURE, color: 'text-emerald-400', desc: '目标夺取' },
-    { k: '3', n: '战术包围', type: CommandType.SURROUND, color: 'text-purple-400', desc: '环形合围' },
-    { k: '4', n: '核心阵地', type: CommandType.DEFEND, color: 'text-blue-400', desc: '全员守备' },
-    { k: '5', n: '侦查模式', type: CommandType.RECON, color: 'text-yellow-400', desc: '全场测绘' },
-    { k: '6', n: '自由规划', type: CommandType.FREE_PLANNING, color: 'text-cyan-400', desc: '战术自主' },
+    { k: '1', n: t('command.attack.name'), type: CommandType.ATTACK, color: 'text-red-400', desc: t('command.attack.desc') },
+    { k: '2', n: t('command.capture.name'), type: CommandType.CAPTURE, color: 'text-emerald-400', desc: t('command.capture.desc') },
+    { k: '3', n: t('command.surround.name'), type: CommandType.SURROUND, color: 'text-purple-400', desc: t('command.surround.desc') },
+    { k: '4', n: t('command.defend.name'), type: CommandType.DEFEND, color: 'text-blue-400', desc: t('command.defend.desc') },
+    { k: '5', n: t('command.recon.name'), type: CommandType.RECON, color: 'text-yellow-400', desc: t('command.recon.desc') },
+    { k: '6', n: t('command.free.name'), type: CommandType.FREE_PLANNING, color: 'text-cyan-400', desc: t('command.free.desc') },
   ];
 
   const allParticipants = [state.player, ...state.allies, ...state.enemies].sort((a, b) => b.score - a.score);
@@ -78,29 +99,29 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
 
   const getEnemyIntentDesc = (cmd: CommandType | null) => {
      switch(cmd) {
-        case CommandType.ATTACK: return "发起强力突围";
-        case CommandType.DEFEND: return "战术性收缩防御";
-        case CommandType.SURROUND: return "正在执行口袋阵";
-        case CommandType.CAPTURE: return "分兵渗透占领中";
-        case CommandType.RECON: return "展开全场测绘侦查";
-        case CommandType.FREE_PLANNING: return "执行战术自主序列";
-        default: return "维持现有态势";
+        case CommandType.ATTACK: return t('enemy.intent.attack');
+        case CommandType.DEFEND: return t('enemy.intent.defend');
+        case CommandType.SURROUND: return t('enemy.intent.surround');
+        case CommandType.CAPTURE: return t('enemy.intent.capture');
+        case CommandType.RECON: return t('enemy.intent.recon');
+        case CommandType.FREE_PLANNING: return t('enemy.intent.free');
+        default: return t('enemy.intent.default');
      }
   };
 
   return (
-    <div className="fixed inset-0 pointer-events-none flex flex-col justify-between p-4 md:p-6 font-sans overflow-hidden text-white">
+    <div className="fixed inset-0 pointer-events-none flex flex-col justify-between p-4 pt-[calc(env(safe-area-inset-top)+1rem)] pb-[calc(env(safe-area-inset-bottom)+1rem)] md:p-6 font-sans overflow-hidden text-white">
       {!state.isGameOver && (
         <div className="flex justify-between items-start">
           <div className="space-y-2">
             <div className="bg-slate-900/90 border border-white/10 p-3 rounded-xl w-48 md:w-64 shadow-2xl backdrop-blur-md">
-              <h2 className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2">战略目标: 核心占领</h2>
+              <h2 className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-2">{t('hud.target.enemy')}</h2>
               <div className="h-2 bg-white/10 rounded-full overflow-hidden">
                 <div className="h-full bg-emerald-500 transition-all duration-300" style={{ width: `${capturePercentEnemy}%` }} />
               </div>
             </div>
             <div className="bg-slate-900/90 border border-white/10 p-3 rounded-xl w-48 md:w-64 shadow-2xl backdrop-blur-md">
-              <h2 className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-red-400 mb-2">安全警报: 基地完整度</h2>
+              <h2 className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-red-400 mb-2">{t('hud.target.ally')}</h2>
               <div className="h-2 bg-white/10 rounded-full overflow-hidden">
                 <div className="h-full bg-red-500 transition-all duration-300" style={{ width: `${100-capturePercentAlly}%` }} />
               </div>
@@ -108,10 +129,10 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
             <div className="bg-purple-950/80 border border-purple-500/40 p-3 rounded-xl w-48 md:w-64 shadow-2xl backdrop-blur-md">
               <h2 className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-purple-400 mb-1 flex items-center gap-2">
                  <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
-                 敌方智能监测
+                 {t('hud.enemyIntel')}
               </h2>
               <p className="text-[10px] md:text-xs font-mono text-purple-200">
-                 敌方指令: {getEnemyIntentDesc(state.enemyCommand)}
+                 {t('hud.enemyCommand')}: {getEnemyIntentDesc(state.enemyCommand)}
               </p>
               {enemyLeader && enemyLeader.health > 0 && (
                  <div className="mt-2 text-[9px] italic text-purple-300/80 border-t border-purple-500/20 pt-1">
@@ -125,8 +146,8 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
             <div className={`bg-black/60 border border-white/5 p-4 rounded-xl shadow-2xl backdrop-blur-md pointer-events-auto transition-all duration-300 ${isCommCollapsed ? 'w-12 h-12 overflow-hidden' : 'w-80'}`}
                  onClick={() => isCommCollapsed && setIsCommCollapsed(false)}>
               <h2 className="text-[10px] font-black uppercase tracking-widest text-blue-300 mb-3 flex justify-between items-center whitespace-nowrap">
-                {!isCommCollapsed && <span>战术指挥链路</span>}
-                <button onClick={(e) => { e.stopPropagation(); setIsCommCollapsed(!isCommCollapsed); }} className="p-1 text-[8px]">{isCommCollapsed ? '展开' : '收起'}</button>
+                {!isCommCollapsed && <span>{t('hud.commLink')}</span>}
+                <button onClick={(e) => { e.stopPropagation(); setIsCommCollapsed(!isCommCollapsed); }} className="p-1 text-[8px]">{isCommCollapsed ? t('hud.expand') : t('hud.collapse')}</button>
               </h2>
               {!isCommCollapsed && (
                 <div className="space-y-2 max-h-48 overflow-y-auto">
@@ -134,7 +155,7 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
                     <div key={a.id} className="text-[11px] flex items-start gap-2 border-l-2 border-white/10 pl-2">
                       <span className="font-bold text-gray-400 whitespace-nowrap">{a.nickname}:</span>
                       <span className={a.health > 0 ? "text-blue-100 italic" : "text-red-600 font-bold"}>
-                        {a.health > 0 ? `"${a.lastDialogue || '确认战术位置'}"` : `[ 装甲重构中 ]`}
+                        {a.health > 0 ? `"${a.lastDialogue || t('hud.defaultDialogue')}"` : t('hud.rebuilding')}
                       </span>
                     </div>
                   ))}
@@ -145,9 +166,27 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
 
           <div className="p-3 md:p-4 rounded-xl max-w-[150px] md:max-w-sm shadow-2xl backdrop-blur-md border bg-slate-900/90 border-blue-500/20">
             <h2 className="text-[8px] md:text-[10px] font-black uppercase tracking-widest text-blue-400 mb-1 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-blue-500" /> 战术分析
+              <span className={`w-2 h-2 rounded-full ${state.isAIConnected ? 'bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-blue-500'}`} /> 
+              {t('hud.tacticalAnalysis')} {state.isAIConnected && <span className="text-[7px] md:text-[9px] text-emerald-500 ml-1 font-bold tracking-normal opacity-80">● {t('hud.aiOnline')}</span>}
             </h2>
-            <p className="text-[10px] md:text-sm font-medium leading-relaxed text-blue-50">"{state.tacticalAdvice || '正在接收指挥官信号...'}"</p>
+            <p className="text-[10px] md:text-sm font-medium leading-relaxed text-blue-50 whitespace-pre-wrap">{state.tacticalAdvice || t('hud.waitingSignal')}</p>
+            {state.currentAIModel && (
+              <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[8px] md:text-[9px]">
+                <span className="text-white/40 uppercase tracking-wider">{t('hud.model')}:</span>
+                <span className={`font-bold uppercase ${
+                  state.currentAIModel === 'ollama' ? 'text-purple-400' : 
+                  state.currentAIModel === 'gemini' ? 'text-blue-400' : 
+                  'text-yellow-400'
+                }`}>
+                  {state.currentAIModel === 'ollama' ? 'Ollama' : 
+                   state.currentAIModel === 'gemini' ? 'Gemini' : 
+                   t('hud.ruleEngine')}
+                </span>
+                {state.lastAIResponseTime && (
+                  <span className="text-white/30 ml-2">{state.lastAIResponseTime.toFixed(0)}ms</span>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -157,74 +196,172 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
         <div className="absolute top-4 left-1/2 -translate-x-1/2 flex gap-4 pointer-events-none">
           <div className="bg-slate-900/90 backdrop-blur-md px-6 py-2 rounded-full border border-blue-500/20 flex items-center gap-6 shadow-2xl">
             <div className="flex items-center gap-2">
-              <span className="text-blue-400/60 text-[10px] font-black uppercase tracking-wider">Gold</span>
+              <span className="text-blue-400/60 text-[10px] font-black uppercase tracking-wider">{t('hud.gold')}</span>
               <span className="text-yellow-400 font-black text-xl tabular-nums drop-shadow-[0_0_8px_rgba(250,204,21,0.4)]">{state.gold}</span>
             </div>
             <div className="w-px h-4 bg-white/10" />
             <div className="flex items-center gap-2">
-              <span className="text-blue-400/60 text-[10px] font-black uppercase tracking-wider">Score</span>
+              <span className="text-blue-400/60 text-[10px] font-black uppercase tracking-wider">{t('hud.score')}</span>
               <span className="text-white font-black text-xl tabular-nums">{state.player.score}</span>
             </div>
+            {landmineCount > 0 && (
+              <>
+                <div className="w-px h-4 bg-white/10" />
+                <div className="flex items-center gap-2">
+                  <span className="text-red-400/80 text-[10px] font-black uppercase tracking-wider">{t('hud.mine')}</span>
+                  <span className="text-red-400 font-black text-xl tabular-nums animate-pulse">x{landmineCount}</span>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
 
       {state.activeMenu && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-auto p-4">
-          <div className="bg-slate-950/98 border-2 border-blue-500/30 p-6 md:p-8 rounded-[2rem] md:rounded-[3rem] shadow-[0_0_100px_rgba(0,0,0,1)] w-full max-w-2xl text-center">
-            <div className="flex gap-4 justify-center mb-6 border-b border-white/10 pb-4">
-              <button onClick={() => setActiveTab('COMMANDS')} className={`text-lg font-black tracking-tighter uppercase italic px-4 py-2 rounded-xl transition-all ${activeTab === 'COMMANDS' ? 'bg-blue-600 text-white' : 'text-blue-400 hover:bg-white/5'}`}>战术指令集</button>
-              <button onClick={() => setActiveTab('SHOP')} className={`text-lg font-black tracking-tighter uppercase italic px-4 py-2 rounded-xl transition-all ${activeTab === 'SHOP' ? 'bg-yellow-600 text-white shadow-[0_0_20px_rgba(202,138,4,0.3)]' : 'text-yellow-400 hover:bg-white/5'}`}>军需商城</button>
-              <button onClick={() => setActiveTab('SCOREBOARD')} className={`text-lg font-black tracking-tighter uppercase italic px-4 py-2 rounded-xl transition-all ${activeTab === 'SCOREBOARD' ? 'bg-blue-600 text-white' : 'text-blue-400 hover:bg-white/5'}`}>战场情报局</button>
-              <button onClick={() => setActiveTab('SETTINGS')} className={`text-lg font-black tracking-tighter uppercase italic px-4 py-2 rounded-xl transition-all ${activeTab === 'SETTINGS' ? 'bg-blue-600 text-white' : 'text-blue-400 hover:bg-white/5'}`}>系统设置</button>
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-auto p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)]">
+          <div className="bg-slate-950/98 border-2 border-blue-500/30 p-5 md:p-8 rounded-[2rem] md:rounded-[3rem] shadow-[0_0_100px_rgba(0,0,0,1)] w-full max-w-2xl text-center max-h-[85vh] flex flex-col">
+            <div className="hidden sm:flex gap-3 justify-center mb-5 border-b border-white/10 pb-4">
+              <button onClick={() => setActiveTab('COMMANDS')} className={`text-sm sm:text-lg font-black tracking-tighter uppercase italic px-3 sm:px-4 py-2 rounded-xl transition-all ${activeTab === 'COMMANDS' ? 'bg-blue-600 text-white' : 'text-blue-400 hover:bg-white/5'}`}>{t('hud.tab.commands')}</button>
+              <button onClick={() => setActiveTab('SHOP')} className={`text-sm sm:text-lg font-black tracking-tighter uppercase italic px-3 sm:px-4 py-2 rounded-xl transition-all ${activeTab === 'SHOP' ? 'bg-yellow-600 text-white shadow-[0_0_20px_rgba(202,138,4,0.3)]' : 'text-yellow-400 hover:bg-white/5'}`}>{t('hud.tab.shop')}</button>
+              <button onClick={() => setActiveTab('SCOREBOARD')} className={`text-sm sm:text-lg font-black tracking-tighter uppercase italic px-3 sm:px-4 py-2 rounded-xl transition-all ${activeTab === 'SCOREBOARD' ? 'bg-blue-600 text-white' : 'text-blue-400 hover:bg-white/5'}`}>{t('hud.tab.intel')}</button>
+              <button onClick={() => setActiveTab('SETTINGS')} className={`text-sm sm:text-lg font-black tracking-tighter uppercase italic px-3 sm:px-4 py-2 rounded-xl transition-all ${activeTab === 'SETTINGS' ? 'bg-blue-600 text-white' : 'text-blue-400 hover:bg-white/5'}`}>{t('hud.tab.settings')}</button>
             </div>
+
+            <div key={tabAnimKey} className="flex-1 overflow-y-auto pr-1 animate-[panel-in_180ms_ease-out]">
 
             {activeTab === 'SETTINGS' && (
               <div className="space-y-6 py-4">
                 <div className="flex flex-col items-center gap-4">
-                  <h3 className="text-sm font-black text-white/40 uppercase tracking-widest">战术控制面板</h3>
+                  <h3 className="text-sm font-black text-white/40 uppercase tracking-widest">{t('settings.controlPanel')}</h3>
                   
                   <button 
                     onClick={() => window.dispatchEvent(new CustomEvent('toggle-pause'))}
                     className={`w-full max-w-xs py-4 rounded-2xl font-black text-lg transition-all ${state.isPaused ? 'bg-amber-500 text-white shadow-[0_0_20px_rgba(245,158,11,0.3)]' : 'bg-white/5 text-white/60 border border-white/10 hover:bg-white/10'}`}
                   >
-                    {state.isPaused ? '继续游戏 (Resume)' : '暂停游戏 (Pause)'}
+                    {state.isPaused ? t('settings.resume') : t('settings.pause')}
                   </button>
 
                   <button 
                     onClick={() => window.dispatchEvent(new CustomEvent('toggle-ai'))}
                     className={`w-full max-w-xs py-4 rounded-2xl font-black text-lg transition-all ${state.isAIControlled ? 'bg-emerald-600 text-white shadow-[0_0_20px_rgba(16,185,129,0.3)]' : 'bg-white/5 text-white/60 border border-white/10 hover:bg-white/10'}`}
                   >
-                    {state.isAIControlled ? 'AI 掌控中 (AI Active)' : '开启 AI 代打 (Enable AI)'}
+                    {state.isAIControlled ? t('settings.aiOn') : t('settings.aiOff')}
                   </button>
 
                   <button 
                     onClick={() => window.dispatchEvent(new CustomEvent('toggle-auto-aim'))}
                     className={`w-full max-w-xs py-4 rounded-2xl font-black text-lg transition-all ${state.isAutoAimEnabled ? 'bg-blue-600 text-white shadow-[0_0_20px_rgba(59,130,246,0.3)]' : 'bg-white/5 text-white/60 border border-white/10 hover:bg-white/10'}`}
                   >
-                    {state.isAutoAimEnabled ? '自瞄已开启 (Auto-Aim ON)' : '开启自动瞄准 (Enable Auto-Aim)'}
+                    {state.isAutoAimEnabled ? t('settings.autoAimOn') : t('settings.autoAimOff')}
                   </button>
 
                   <button 
                     onClick={() => window.dispatchEvent(new CustomEvent('toggle-auto-fire'))}
                     className={`w-full max-w-xs py-4 rounded-2xl font-black text-lg transition-all ${state.isAutoFireEnabled ? 'bg-red-600 text-white shadow-[0_0_20px_rgba(220,38,38,0.3)]' : 'bg-white/5 text-white/60 border border-white/10 hover:bg-white/10'}`}
                   >
-                    {state.isAutoFireEnabled ? '自动射击已开启 (Auto-Fire ON)' : '开启自动射击 (Enable Auto-Fire)'}
+                    {state.isAutoFireEnabled ? t('settings.autoFireOn') : t('settings.autoFireOff')}
                   </button>
 
                   <button 
                     onClick={() => window.dispatchEvent(new CustomEvent('toggle-memory'))}
                     className={`w-full max-w-xs py-4 rounded-2xl font-black text-lg transition-all ${state.isMemoryEnabled ? 'bg-purple-600 text-white shadow-[0_0_20px_rgba(147,51,234,0.3)]' : 'bg-white/5 text-white/60 border border-white/10 hover:bg-white/10'}`}
                   >
-                    {state.isMemoryEnabled ? 'AI 记忆已开启 (Memory ON)' : '开启 AI 记忆 (Enable Memory)'}
+                    {state.isMemoryEnabled ? t('settings.memoryOn') : t('settings.memoryOff')}
                   </button>
+
+                  <div className="w-full max-w-xs mt-2 pt-4 border-t border-white/10 text-left">
+                    <p className="text-[10px] font-black text-white/40 uppercase tracking-widest mb-3">{t('settings.apiKeyTitle')}</p>
+                    <div className="space-y-3">
+                      <div className="relative">
+                        <input
+                          type="password"
+                          value={userApiKey}
+                          onChange={(e) => setUserApiKey(e.target.value)}
+                          placeholder={t('settings.apiKeyPlaceholder')}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-blue-500/50 transition-all pointer-events-auto"
+                        />
+                        {userApiKey && (
+                          <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
+                            <span className="text-[8px] font-black text-emerald-500 uppercase">{t('settings.apiKeyStatusActive')}</span>
+                          </div>
+                        )}
+                      </div>
+                      
+                      <button
+                        onClick={saveApiKey}
+                        disabled={saveStatus === 'saving'}
+                        className={`w-full py-3 rounded-xl font-black text-sm transition-all flex items-center justify-center gap-2 ${
+                          saveStatus === 'saved' 
+                            ? 'bg-emerald-600 text-white' 
+                            : 'bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_20px_rgba(59,130,246,0.3)]'
+                        }`}
+                      >
+                        {saveStatus === 'saving' ? (
+                          <span className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                        ) : saveStatus === 'saved' ? (
+                          <>
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                            </svg>
+                            {t('settings.saveKey')}
+                          </>
+                        ) : (
+                          t('settings.saveKey')
+                        )}
+                      </button>
+                      
+                      <p className="text-[9px] text-white/20 italic leading-tight">
+                        {t('settings.apiKeyNote')}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="w-full max-w-xs mt-2 pt-4 border-t border-white/10">
+                    <p className="text-[10px] font-black text-white/40 uppercase tracking-widest mb-3">{t('settings.privacyTitle')}</p>
+                    <button
+                      onClick={() => window.dispatchEvent(new CustomEvent('toggle-privacy-mode'))}
+                      className={`w-full py-3 rounded-2xl font-black text-sm transition-all ${state.isPrivacyModeEnabled ? 'bg-slate-200 text-slate-950' : 'bg-white/5 text-white/60 border border-white/10 hover:bg-white/10'}`}
+                    >
+                      {state.isPrivacyModeEnabled ? t('settings.privacyModeOn') : t('settings.privacyModeOff')}
+                    </button>
+                    <button
+                      onClick={() => window.dispatchEvent(new CustomEvent('clear-local-data'))}
+                      className="w-full mt-3 py-3 rounded-2xl font-black text-sm transition-all bg-white/5 text-white/60 border border-white/10 hover:bg-white/10"
+                    >
+                      {t('settings.clearLocalIntel')}
+                    </button>
+                  </div>
+
+                  <div className="w-full max-w-xs mt-4 pt-4 border-t border-white/10">
+                    <p className="text-[10px] font-black text-white/40 uppercase tracking-widest mb-3">{t('settings.perfTitle')}</p>
+                    <button
+                      onClick={() => window.dispatchEvent(new CustomEvent('toggle-perf-overlay'))}
+                      className={`w-full py-3 rounded-2xl font-black text-sm transition-all ${state.isPerfOverlayEnabled ? 'bg-emerald-600 text-white shadow-[0_0_20px_rgba(16,185,129,0.25)]' : 'bg-white/5 text-white/60 border border-white/10 hover:bg-white/10'}`}
+                    >
+                      {state.isPerfOverlayEnabled ? t('settings.perfOn') : t('settings.perfOff')}
+                    </button>
+
+                    {state.isPerfOverlayEnabled && (
+                      <div className="mt-3 grid grid-cols-2 gap-3 text-left">
+                        <div className="bg-white/5 border border-white/10 rounded-xl p-3">
+                          <p className="text-[9px] text-white/30 font-black uppercase">{t('settings.fps')}</p>
+                          <p className="text-lg font-black tabular-nums text-emerald-400">{state.fps ? Math.round(state.fps) : '--'}</p>
+                        </div>
+                        <div className="bg-white/5 border border-white/10 rounded-xl p-3">
+                          <p className="text-[9px] text-white/30 font-black uppercase">{t('settings.longTasks')}</p>
+                          <p className="text-lg font-black tabular-nums text-yellow-400">{state.longTaskCount ?? 0}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 
                 <div className="text-[10px] text-white/20 italic mt-8 space-y-1">
-                  <p>* 开启 AI 代打后，指挥系统将自动接管玩家坦克，进行战术规划与作战</p>
-                  <p>* 开启自动瞄准后，系统将协助锁定敌方目标。移动鼠标可随时接管控制权</p>
-                  <p>* 开启自动射击后，系统将在锁定目标且角度合适时自动开火</p>
-                  <p>* 开启 AI 记忆后，指挥官将调用历史战绩与学习到的战术；关闭后将回归初始打法</p>
+                  <p>{t('settings.note.ai')}</p>
+                  <p>{t('settings.note.autoAim')}</p>
+                  <p>{t('settings.note.autoFire')}</p>
+                  <p>{t('settings.note.memory')}</p>
                 </div>
               </div>
             )}
@@ -233,11 +370,12 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
               <div className="py-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[400px] overflow-y-auto px-2">
                   {[
-                    { id: 'damage', name: '永久伤害加成', desc: '提升全队坦克造成的伤害', icon: '💥', value: state.teamUpgrades.damage },
-                    { id: 'defense', name: '永久防御加成', desc: '减少全队坦克受到的伤害', icon: '🛡️', value: state.teamUpgrades.defense },
-                    { id: 'speed', name: '永久速度加成', desc: '提升全队坦克的移动速度', icon: '⚡', value: state.teamUpgrades.speed },
-                    { id: 'regen', name: '永久回血加成', desc: '提升全队坦克的自动回血效率', icon: '❤️', value: state.teamUpgrades.regen },
-                    { id: 'haste', name: '永久急迫加成', desc: '提升全队坦克的射速与子弹速度', icon: '🔥', value: state.teamUpgrades.haste },
+                    { id: 'damage', name: t('shop.upgrade.damage.name'), desc: t('shop.upgrade.damage.desc'), icon: '💥', value: state.teamUpgrades.damage },
+                    { id: 'defense', name: t('shop.upgrade.defense.name'), desc: t('shop.upgrade.defense.desc'), icon: '🛡️', value: state.teamUpgrades.defense },
+                    { id: 'speed', name: t('shop.upgrade.speed.name'), desc: t('shop.upgrade.speed.desc'), icon: '⚡', value: state.teamUpgrades.speed },
+                    { id: 'regen', name: t('shop.upgrade.regen.name'), desc: t('shop.upgrade.regen.desc'), icon: '❤️', value: state.teamUpgrades.regen },
+                    { id: 'haste', name: t('shop.upgrade.haste.name'), desc: t('shop.upgrade.haste.desc'), icon: '🔥', value: state.teamUpgrades.haste },
+                    { id: 'landmine', name: t('shop.upgrade.landmine.name'), desc: t('shop.upgrade.landmine.desc'), icon: '💣', value: 0 },
                   ].map(item => {
                       const count = Math.round(item.value / SHOP_UPGRADES.BUFF_INCREMENT);
                        const cost = SHOP_UPGRADES.BASE_COST;
@@ -247,49 +385,53 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
                          <div key={item.id} className="bg-white/5 border border-white/10 rounded-2xl p-4 flex flex-col gap-3 transition-all hover:bg-white/10">
                            <div className="flex justify-between items-start">
                              <div className="flex gap-3">
-                               <span className="text-2xl">{item.icon}</span>
-                               <div className="text-left">
-                                 <h4 className="text-sm font-black text-white uppercase tracking-tight">{item.name}</h4>
-                                 <p className="text-[10px] text-white/40 leading-tight">{item.desc}</p>
-                               </div>
-                             </div>
-                             <div className="bg-blue-600/20 px-2 py-1 rounded text-[10px] font-black text-blue-400 border border-blue-500/30">
-                               LV.{count}
-                             </div>
-                           </div>
-                           
-                           <div className="flex items-center justify-between mt-auto pt-2 border-t border-white/5">
-                             <div className="flex items-center gap-1">
-                               <span className="text-xs text-yellow-400 font-black">Cost:</span>
-                               <span className="text-sm text-yellow-400 font-black tabular-nums">{cost}</span>
-                               <span className="text-[10px] text-yellow-400/60 ml-1">Gold</span>
-                             </div>
-                             
-                             <button
-                               disabled={!canAfford}
-                               onClick={() => window.dispatchEvent(new CustomEvent('buy-upgrade', { detail: { type: item.id, cost } }))}
-                               className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
-                                 canAfford 
-                                   ? 'bg-yellow-600 text-white shadow-[0_0_15px_rgba(202,138,4,0.3)] hover:scale-105 active:scale-95' 
-                                   : 'bg-white/5 text-white/20 cursor-not-allowed'
-                               }`}
-                             >
-                               {canAfford ? 'PURCHASE' : 'NEED GOLD'}
-                             </button>
-                           </div>
-                        
-                        <div className="flex items-center gap-2 mt-1">
-                          <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
-                            <div className="h-full bg-emerald-500/50 transition-all" style={{ width: `${(item.value % 1) * 100}%` }} />
+                              <span className="text-2xl">{item.icon}</span>
+                              <div className="text-left">
+                                <h4 className="text-sm font-black text-white uppercase tracking-tight">{item.name}</h4>
+                                <p className="text-[10px] text-white/40 leading-tight">{item.desc}</p>
+                              </div>
+                            </div>
+                            {item.id !== 'landmine' && (
+                              <div className="bg-blue-600/20 px-2 py-1 rounded text-[10px] font-black text-blue-400 border border-blue-500/30">
+                                LV.{count}
+                              </div>
+                            )}
                           </div>
-                          <span className="text-[9px] font-mono text-emerald-400">+{Math.round(item.value * 100)}%</span>
-                        </div>
+                          
+                          <div className="flex items-center justify-between mt-auto pt-2 border-t border-white/5">
+                            <div className="flex items-center gap-1">
+                              <span className="text-xs text-yellow-400 font-black">{t('shop.cost')}:</span>
+                              <span className="text-sm text-yellow-400 font-black tabular-nums">{cost}</span>
+                              <span className="text-[10px] text-yellow-400/60 ml-1">{t('hud.gold')}</span>
+                            </div>
+                            
+                            <button
+                              disabled={!canAfford}
+                              onClick={() => window.dispatchEvent(new CustomEvent('buy-upgrade', { detail: { type: item.id, cost } }))}
+                              className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${
+                                canAfford 
+                                  ? 'bg-yellow-600 text-white shadow-[0_0_15px_rgba(202,138,4,0.3)] hover:scale-105 active:scale-95' 
+                                  : 'bg-white/5 text-white/20 cursor-not-allowed'
+                              }`}
+                            >
+                              {canAfford ? t('shop.purchase') : t('shop.needGold')}
+                            </button>
+                          </div>
+                       
+                       {item.id !== 'landmine' && (
+                         <div className="flex items-center gap-2 mt-1">
+                           <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
+                             <div className="h-full bg-emerald-500/50 transition-all" style={{ width: `${(item.value % 1) * 100}%` }} />
+                           </div>
+                           <span className="text-[9px] font-mono text-emerald-400">+{Math.round(item.value * 100)}%</span>
+                         </div>
+                       )}
                       </div>
                     );
                   })}
                 </div>
                 <p className="mt-6 text-[10px] text-white/20 italic">
-                  * 军需商城提供的所有加成均为全队共享且永久生效
+                  {t('shop.note')}
                 </p>
               </div>
             )}
@@ -310,7 +452,7 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
                   })}
                 </div>
                 <div className="mb-6">
-                  <p className="text-[8px] md:text-[10px] uppercase font-black text-white/30 mb-3 tracking-widest">指挥规模 / 覆盖范围</p>
+                  <p className="text-[8px] md:text-[10px] uppercase font-black text-white/30 mb-3 tracking-widest">{t('command.scale')}</p>
                   <div className="flex justify-center gap-2 flex-wrap">
                     {Array.from({length: state.allies.length}, (_, i) => i + 1).map(size => (
                       <button key={size} onClick={() => dispatchCommand(state.currentCommand || CommandType.FREE, size)}
@@ -327,57 +469,6 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
                   </div>
                 </div>
 
-                {/* AI 战术情报局 */}
-                <div className="mt-8 border-t border-white/10 pt-6 text-left">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-xs font-black text-emerald-400 uppercase tracking-widest flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                      AI 战术情报局 (AI Tactical Intel)
-                    </h3>
-                    <span className="text-[9px] text-white/20 font-mono">KNOWLEDGE_BASE_V1.0</span>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-4">
-                      <p className="text-[9px] font-black text-emerald-500/60 uppercase mb-2 tracking-tighter">已学战术 (Learned Tactics)</p>
-                      <div className="space-y-2">
-                        {state.knowledgeBase?.learnedTactics.length ? (
-                          state.knowledgeBase.learnedTactics.slice(-3).reverse().map((t, i) => (
-                            <p key={i} className="text-[11px] text-emerald-100 leading-tight border-l-2 border-emerald-500/30 pl-2">{t}</p>
-                          ))
-                        ) : (
-                          <p className="text-[11px] text-white/20 italic">暂无战术积累，实战中进化...</p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-4">
-                      <p className="text-[9px] font-black text-blue-500/60 uppercase mb-2 tracking-tighter">玩家模式 (Player Patterns)</p>
-                      <div className="space-y-2">
-                        {state.knowledgeBase?.playerPatterns.length ? (
-                          state.knowledgeBase.playerPatterns.slice(-3).reverse().map((p, i) => (
-                            <p key={i} className="text-[11px] text-blue-100 leading-tight border-l-2 border-blue-500/30 pl-2">{p}</p>
-                          ))
-                        ) : (
-                          <p className="text-[11px] text-white/20 italic">模式识别中，请继续战斗...</p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="bg-purple-500/5 border border-purple-500/20 rounded-2xl p-4">
-                      <p className="text-[9px] font-black text-purple-500/60 uppercase mb-2 tracking-tighter">创新构想 (Innovation)</p>
-                      <div className="space-y-2">
-                        {state.knowledgeBase?.innovationNotes.length ? (
-                          state.knowledgeBase.innovationNotes.slice(-3).reverse().map((n, i) => (
-                            <p key={i} className="text-[11px] text-purple-100 leading-tight border-l-2 border-purple-500/30 pl-2">{n}</p>
-                          ))
-                        ) : (
-                          <p className="text-[11px] text-white/20 italic">战略模拟中，寻找破局点...</p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
               </>
             )}
 
@@ -386,10 +477,10 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
                 <table className="w-full text-left border-collapse">
                   <thead className="sticky top-0 bg-slate-950 text-[10px] md:text-xs font-black uppercase text-white/40 border-b border-white/10">
                     <tr>
-                      <th className="py-2 pl-2">呼号 (Name)</th>
-                      <th className="py-2 text-center">击杀 (K)</th>
-                      <th className="py-2 text-center">助攻 (A)</th>
-                      <th className="py-2 text-right pr-2">积分 (S)</th>
+                      <th className="py-2 pl-2">{t('scoreboard.name')}</th>
+                      <th className="py-2 text-center">{t('scoreboard.kills')}</th>
+                      <th className="py-2 text-center">{t('scoreboard.assists')}</th>
+                      <th className="py-2 text-right pr-2">{t('scoreboard.score')}</th>
                     </tr>
                   </thead>
                   <tbody className="text-[11px] md:text-sm font-mono">
@@ -407,10 +498,70 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
                     ))}
                   </tbody>
                 </table>
+
+                <div className="mt-6 border-t border-white/10 pt-6 text-left">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xs font-black text-emerald-400 uppercase tracking-widest flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      {t('scoreboard.aiIntel')}
+                    </h3>
+                    <span className="text-[9px] text-white/20 font-mono">KNOWLEDGE_BASE_V1.0</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-4">
+                      <p className="text-[9px] font-black text-emerald-500/60 uppercase mb-2 tracking-tighter">{t('scoreboard.learnedTactics')}</p>
+                      <div className="space-y-2">
+                        {state.knowledgeBase?.learnedTactics.length ? (
+                          state.knowledgeBase.learnedTactics.slice(-3).reverse().map((tactic, i) => (
+                            <p key={i} className="text-[11px] text-emerald-100 leading-tight border-l-2 border-emerald-500/30 pl-2">{tactic}</p>
+                          ))
+                        ) : (
+                          <p className="text-[11px] text-white/20 italic">{t('scoreboard.noTactics')}</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="bg-blue-500/5 border border-blue-500/20 rounded-2xl p-4">
+                      <p className="text-[9px] font-black text-blue-500/60 uppercase mb-2 tracking-tighter">{t('scoreboard.playerPatterns')}</p>
+                      <div className="space-y-2">
+                        {state.knowledgeBase?.playerPatterns.length ? (
+                          state.knowledgeBase.playerPatterns.slice(-3).reverse().map((pattern, i) => (
+                            <p key={i} className="text-[11px] text-blue-100 leading-tight border-l-2 border-blue-500/30 pl-2">{pattern}</p>
+                          ))
+                        ) : (
+                          <p className="text-[11px] text-white/20 italic">{t('scoreboard.noPatterns')}</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="bg-purple-500/5 border border-purple-500/20 rounded-2xl p-4">
+                      <p className="text-[9px] font-black text-purple-500/60 uppercase mb-2 tracking-tighter">{t('scoreboard.innovation')}</p>
+                      <div className="space-y-2">
+                        {state.knowledgeBase?.innovationNotes.length ? (
+                          state.knowledgeBase.innovationNotes.slice(-3).reverse().map((note, i) => (
+                            <p key={i} className="text-[11px] text-purple-100 leading-tight border-l-2 border-purple-500/30 pl-2">{note}</p>
+                          ))
+                        ) : (
+                          <p className="text-[11px] text-white/20 italic">{t('scoreboard.noInnovation')}</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
-            <button onClick={toggleMenu} className="text-[8px] md:text-[10px] text-blue-400/50 font-black tracking-[0.2em] uppercase mt-4">退出战术中枢</button>
+            </div>
+
+            <div className="sm:hidden mt-4 pt-4 border-t border-white/10 grid grid-cols-4 gap-2">
+              <button onClick={() => setActiveTab('COMMANDS')} className={`py-3 rounded-xl font-black text-[10px] tracking-wider transition-all ${activeTab === 'COMMANDS' ? 'bg-blue-600 text-white' : 'bg-white/5 text-white/60 border border-white/10'}`}>{t('hud.tab.commands')}</button>
+              <button onClick={() => setActiveTab('SHOP')} className={`py-3 rounded-xl font-black text-[10px] tracking-wider transition-all ${activeTab === 'SHOP' ? 'bg-yellow-600 text-white' : 'bg-white/5 text-white/60 border border-white/10'}`}>{t('hud.tab.shop')}</button>
+              <button onClick={() => setActiveTab('SCOREBOARD')} className={`py-3 rounded-xl font-black text-[10px] tracking-wider transition-all ${activeTab === 'SCOREBOARD' ? 'bg-blue-600 text-white' : 'bg-white/5 text-white/60 border border-white/10'}`}>{t('hud.tab.intel')}</button>
+              <button onClick={() => setActiveTab('SETTINGS')} className={`py-3 rounded-xl font-black text-[10px] tracking-wider transition-all ${activeTab === 'SETTINGS' ? 'bg-blue-600 text-white' : 'bg-white/5 text-white/60 border border-white/10'}`}>{t('hud.tab.settings')}</button>
+            </div>
+
+            <button onClick={toggleMenu} className="text-[8px] md:text-[10px] text-blue-400/50 font-black tracking-[0.2em] uppercase mt-4">{t('hud.exit')}</button>
           </div>
         </div>
       )}
@@ -419,18 +570,18 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
         <div className="fixed inset-0 pointer-events-auto bg-black/95 flex items-center justify-center z-[100] p-4">
           <div className="bg-slate-950 border border-white/10 p-10 rounded-[3rem] text-center shadow-2xl max-w-2xl w-full">
             <h1 className={`text-4xl md:text-8xl font-black mb-8 italic ${(state.winner === Team.ALLY || state.winner === Team.PLAYER) ? 'text-emerald-400' : 'text-red-500'}`}>
-              {(state.winner === Team.ALLY || state.winner === Team.PLAYER) ? '战役胜利' : '战役失利'}
+              {(state.winner === Team.ALLY || state.winner === Team.PLAYER) ? t('gameover.victory') : t('gameover.defeat')}
             </h1>
             
             <div className="bg-white/5 rounded-3xl p-6 mb-8 text-left max-h-[400px] overflow-y-auto pointer-events-auto">
-               <h3 className="text-xs font-black uppercase text-blue-400 mb-4 border-b border-white/10 pb-2">战后统计报告</h3>
+               <h3 className="text-xs font-black uppercase text-blue-400 mb-4 border-b border-white/10 pb-2">{t('gameover.report')}</h3>
                <table className="w-full text-sm font-mono">
                  <thead className="text-[10px] text-white/40 uppercase">
                    <tr>
-                     <th className="pb-2 text-left">成员 (Member)</th>
-                     <th className="pb-2 text-center">击杀 (K)</th>
-                     <th className="pb-2 text-center">助攻 (A)</th>
-                     <th className="pb-2 text-right">得分 (S)</th>
+                     <th className="pb-2 text-left">{t('gameover.member')}</th>
+                     <th className="pb-2 text-center">{t('scoreboard.kills')}</th>
+                     <th className="pb-2 text-center">{t('scoreboard.assists')}</th>
+                     <th className="pb-2 text-right">{t('gameover.score')}</th>
                    </tr>
                  </thead>
                  <tbody className="divide-y divide-white/5">
@@ -450,7 +601,7 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
                </table>
             </div>
 
-            <button onClick={onRestart} className="w-full bg-blue-600 hover:bg-blue-500 py-5 rounded-[2rem] text-xl font-black transition-all transform active:scale-95 shadow-xl shadow-blue-600/20">重新部署指挥系统</button>
+            <button onClick={onRestart} className="w-full bg-blue-600 hover:bg-blue-500 py-5 rounded-[2rem] text-xl font-black transition-all transform active:scale-95 shadow-xl shadow-blue-600/20">{t('gameover.restart')}</button>
           </div>
         </div>
       )}
@@ -465,7 +616,7 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
             ) : (
               <div className="bg-black/90 backdrop-blur-xl px-8 py-4 rounded-[2.5rem] border border-white/10 shadow-2xl flex items-center gap-8">
                 <div className="text-center min-w-[150px]">
-                  <p className="text-[8px] uppercase text-gray-500 font-black tracking-widest mb-1">主战坦克 装甲结构</p>
+                  <p className="text-[8px] uppercase text-gray-500 font-black tracking-widest mb-1">{t('hud.armor')}</p>
                   <div className="flex items-center gap-3">
                     <div className="w-32 h-2 bg-white/5 rounded-full overflow-hidden border border-white/5">
                       <div className={`h-full transition-all duration-700 bg-red-500`} style={{ width: `${state.player.health}%` }} />
@@ -480,14 +631,14 @@ const HUD: React.FC<Props> = ({ state, onRestart }) => {
           <div className="pointer-events-auto flex gap-4 items-center">
             {isMobile ? (
               <>
-                <button className="w-16 h-16 bg-white/5 border border-white/10 rounded-full flex items-center justify-center text-blue-400 font-black" onClick={toggleMenu}>战术</button>
-                <button className="w-24 h-24 bg-red-600/20 border-2 border-red-500 rounded-full flex items-center justify-center text-red-500 font-black text-xl shadow-[0_0_20px_rgba(239,68,68,0.3)] active:scale-95 transition-transform" onTouchStart={() => setFiring(true)} onTouchEnd={() => setFiring(false)}>开火</button>
+                <button className="w-16 h-16 bg-white/5 border border-white/10 rounded-full flex items-center justify-center text-blue-400 font-black" onClick={toggleMenu}>{t('hud.mobile.tactics')}</button>
+                <button className="w-24 h-24 bg-red-600/20 border-2 border-red-500 rounded-full flex items-center justify-center text-red-500 font-black text-xl shadow-[0_0_20px_rgba(239,68,68,0.3)] active:scale-95 transition-transform" onTouchStart={() => setFiring(true)} onTouchEnd={() => setFiring(false)}>{t('hud.mobile.fire')}</button>
               </>
             ) : (
               <div className="bg-black/90 backdrop-blur-xl px-8 py-4 rounded-[2rem] border border-white/10 flex items-center gap-6">
                  <div className="text-[9px] text-gray-400 uppercase font-black tracking-tighter">
-                  <div className="flex items-center gap-2">移动: <span className="text-blue-400 border border-blue-400/30 px-1 rounded uppercase">Wasd</span></div>
-                  <div className="flex items-center gap-2 mt-1">指令集/战报: <span className="text-white bg-blue-600 px-1 rounded shadow-lg">Z</span></div>
+                  <div className="flex items-center gap-2">{t('hud.move')}: <span className="text-blue-400 border border-blue-400/30 px-1 rounded uppercase">Wasd</span></div>
+                  <div className="flex items-center gap-2 mt-1">{t('hud.menuKey')}: <span className="text-white bg-blue-600 px-1 rounded shadow-lg">Z</span></div>
                 </div>
               </div>
             )}

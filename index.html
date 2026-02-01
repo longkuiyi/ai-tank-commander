@@ -59,6 +59,11 @@
             100% { bottom: -100px; }
         }
 
+        @keyframes panel-in {
+            0% { opacity: 0; transform: translateY(10px) scale(0.99); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
         /* 移动端摇杆样式 */
         .joystick-base {
             width: 140px;

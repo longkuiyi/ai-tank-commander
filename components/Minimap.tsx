@@ -2,6 +2,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { GameState, Team, WallType } from '../types';
 import { WORLD_WIDTH, WORLD_HEIGHT, MINIMAP_SCALE, COLORS, INFLUENCE_GRID_SIZE, ITEM_COLORS } from '../constants';
+import { t } from '../utils/i18n';
 
 interface Props {
   state: GameState;
@@ -11,7 +12,7 @@ const Minimap: React.FC<Props> = ({ state }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isCollapsed, setIsCollapsed] = useState(false);
 
-  // 动态计算缩放比例，使小地图保持在固定尺寸 (约 180px)
+  // Dynamically calculate scale ratio to keep minimap at a fixed size (approx 180px)
   const minimapScale = 180 / Math.max(state.width, state.height);
 
   useEffect(() => {
@@ -24,7 +25,7 @@ const Minimap: React.FC<Props> = ({ state }) => {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // 绘制墙体
+    // Draw walls
     state.walls.forEach(w => {
       ctx.fillStyle = w.type === WallType.STONE ? '#555' : 
                       w.type === WallType.IRON ? '#333' :
@@ -34,7 +35,7 @@ const Minimap: React.FC<Props> = ({ state }) => {
       ctx.fillRect(w.pos.x * minimapScale, w.pos.y * minimapScale, 2, 2);
     });
 
-    // 绘制物资 (微小点)
+    // Draw items (mini dots)
     state.items.forEach(item => {
       ctx.fillStyle = (ITEM_COLORS as any)[item.type] || '#fff';
       ctx.beginPath();
@@ -42,13 +43,13 @@ const Minimap: React.FC<Props> = ({ state }) => {
       ctx.fill();
     });
 
-    // 绘制据点 (基地)
+    // Draw base (bed)
     state.beds.forEach(b => {
       const color = b.team === Team.ALLY ? COLORS.ALLY : COLORS.ENEMY;
       const bx = b.pos.x * minimapScale;
       const by = b.pos.y * minimapScale;
       
-      // 基地背景发光
+      // Base background glow
       const grad = ctx.createRadialGradient(bx, by, 0, bx, by, 8);
       grad.addColorStop(0, color);
       grad.addColorStop(1, 'transparent');
@@ -57,7 +58,7 @@ const Minimap: React.FC<Props> = ({ state }) => {
       ctx.arc(bx, by, 8, 0, Math.PI * 2);
       ctx.fill();
 
-      // 基地图标 (菱形)
+      // Base icon (diamond)
       ctx.fillStyle = color;
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 1;
@@ -95,14 +96,14 @@ const Minimap: React.FC<Props> = ({ state }) => {
       <button 
         onClick={() => setIsCollapsed(!isCollapsed)}
         className="absolute top-0 right-0 z-20 w-8 h-8 flex items-center justify-center bg-black/40 hover:bg-black/60 text-white transition-colors pointer-events-auto rounded-bl-lg"
-        title={isCollapsed ? "展开小地图" : "折叠小地图"}
+        title={isCollapsed ? t('minimap.expand') : t('minimap.collapse')}
       >
         <span className="text-sm">{isCollapsed ? '🗺️' : '−'}</span>
       </button>
 
       <div className={`transition-opacity duration-300 ${isCollapsed ? 'opacity-0' : 'opacity-100'}`}>
         <div className="absolute top-0 left-0 p-1 bg-black/60 text-[8px] font-bold text-white/50 uppercase">
-          雷达扫描 / 补给品标识
+          {t('minimap.title')}
         </div>
         <canvas 
           ref={canvasRef} 

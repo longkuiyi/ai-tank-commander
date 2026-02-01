@@ -1,11 +1,12 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Team, Tank, Bullet, Wall, WallType, GameState, Vector2D, Bed, AIState, CommandType, Item, ItemType, ControlMode, TeamUpgrades, EffectType, VisualEffect } from '../types';
+import { Team, Tank, Bullet, Wall, WallType, GameState, Vector2D, Bed, AIState, CommandType, Item, ItemType, ControlMode, TeamUpgrades, EffectType, VisualEffect, Landmine, GameMode } from '../types';
 import { 
   WORLD_WIDTH, WORLD_HEIGHT, TANK_SIZE, BULLET_SIZE, WALL_SIZE, 
   PLAYER_SPEED, AI_SPEED, AI_AUTOPILOT_SPEED_MULT, BULLET_SPEED, MAX_HEALTH_TANK, 
   SHOOT_COOLDOWN, COLORS, BED_SIZE, CAPTURE_RADIUS, CAPTURE_TIME_REQUIRED, RESPAWN_DELAY,
   WATER_SLOW_FACTOR, SWAMP_SLOW_FACTOR, BULLET_WATER_SLOW_FACTOR, BULLET_SWAMP_SLOW_FACTOR, BULLET_DAMAGE,
+  LANDMINE_DAMAGE, LANDMINE_SIZE, LANDMINE_AOE_RADIUS,
   HEALTH_PACK_HEAL, HEALTH_PACK_REGEN_PER_SEC, HEALTH_PACK_REGEN_DURATION, MAX_HEALTH_PACKS, ITEM_SIZE, MAX_ITEMS, ITEM_COLORS, 
   SPEED_BUFF_DURATION, DAMAGE_BUFF_DURATION, DEFENSE_BUFF_DURATION, HEAL_BUFF_DURATION,
   AUTO_REGEN_INTERVAL, AUTO_REGEN_AMOUNT,
@@ -14,6 +15,7 @@ import {
 import { checkCollision, getDistance, getAngle, isOutOfBounds } from '../utils/gameLogic';
 import { getTacticalAdvice, reflectOnBattle } from '../services/geminiService';
 import { memoryService } from '../services/memoryService';
+import { t } from '../utils/i18n';
 
 interface Props {
   onStateUpdate: (state: GameState) => void;
@@ -21,6 +23,7 @@ interface Props {
   enemyCount: number;
   nickname: string;
   controlMode: ControlMode;
+  gameMode: GameMode;
   worldWidth: number;
   worldHeight: number;
 }
@@ -31,6 +34,7 @@ const GameCanvas: React.FC<Props> = ({
   enemyCount, 
   nickname, 
   controlMode,
+  gameMode,
   worldWidth: WORLD_WIDTH,
   worldHeight: WORLD_HEIGHT
 }) => {
@@ -84,6 +88,14 @@ const GameCanvas: React.FC<Props> = ({
   };
 
   const [gameState, setGameState] = useState<GameState>(() => {
+    // 基础函数定义
+    const createTank = (id: string, team: Team, pos: Vector2D, color: string, isAI: boolean, n?: string, isLeader = false): Tank => ({
+      id, nickname: n, pos: { ...pos }, spawnPos: { ...pos }, size: TANK_SIZE, team, rotation: 0, turretRotation: 0, health: MAX_HEALTH_TANK, maxHealth: MAX_HEALTH_TANK, speed: isAI ? AI_SPEED : PLAYER_SPEED,
+      currentSpeed: 0, targetSpeed: 0, lastShot: 0, color, isAI, isLeader, score: 0, kills: 0, assists: 0, respawnTimer: 0, aiState: AIState.ATTACK_CORE, activeCommand: CommandType.FREE, lastDialogue: t('game.systemOnline'), flankAngle: (Math.random() - 0.5) * 1.5, lastPos: { ...pos }, recentDamagers: [],
+      buffs: { speedTimer: 0, defenseTimer: 0, damageTimer: 0, healTimer: 0 }
+    });
+
+    // 原有的 NORMAL 模式初始化逻辑
     const safetyZones = [{ x: 400, y: 400, r: 400 }, { x: WORLD_WIDTH - 400, y: WORLD_HEIGHT - 400, r: 400 }];
     const walls: Wall[] = [];
     
@@ -158,21 +170,22 @@ const GameCanvas: React.FC<Props> = ({
       { id: 'bed-ally', team: Team.ALLY, pos: { x: 400, y: 400 }, size: BED_SIZE, captureProgress: 0, capturingTeam: null },
       { id: 'bed-enemy', team: Team.ENEMY, pos: { x: WORLD_WIDTH - 400, y: WORLD_HEIGHT - 400 }, size: BED_SIZE, captureProgress: 0, capturingTeam: null }
     ];
-    const createTank = (id: string, team: Team, pos: Vector2D, color: string, isAI: boolean, n?: string, isLeader = false): Tank => ({
-      id, nickname: n, pos: { ...pos }, spawnPos: { ...pos }, size: TANK_SIZE, team, rotation: 0, turretRotation: 0, health: MAX_HEALTH_TANK, maxHealth: MAX_HEALTH_TANK, speed: isAI ? AI_SPEED : PLAYER_SPEED,
-      currentSpeed: 0, targetSpeed: 0, lastShot: 0, color, isAI, isLeader, score: 0, kills: 0, assists: 0, respawnTimer: 0, aiState: AIState.ATTACK_CORE, activeCommand: CommandType.FREE, lastDialogue: '系统已上线', flankAngle: (Math.random() - 0.5) * 1.5, lastPos: { ...pos }, recentDamagers: [],
-      buffs: { speedTimer: 0, defenseTimer: 0, damageTimer: 0, healTimer: 0 }
-    });
+    
     return {
       player: createTank('player', Team.PLAYER, { x: 500, y: 500 }, COLORS.PLAYER, false, nickname),
-      allies: Array.from({ length: allyCount }).map((_, i) => createTank(`ally-${i}`, Team.ALLY, { x: 200 + (i % 3) * 100, y: 400 + Math.floor(i/3) * 100 }, COLORS.ALLY, true, `队友 ${i+1}`)),
-      enemies: Array.from({ length: enemyCount }).map((_, i) => createTank(`enemy-${i}`, Team.ENEMY, { x: WORLD_WIDTH - 200 - (i % 3) * 100, y: WORLD_HEIGHT - 400 - Math.floor(i/3) * 100 }, COLORS.ENEMY, true, i === 0 ? '敌方指挥官' : `敌军 ${i+1}`, i === 0)),
-      bullets: [], walls, beds, items: [], effects: [], width: WORLD_WIDTH, height: WORLD_HEIGHT, isGameOver: false, message: '战斗开始', winner: null, activeMenu: false, enemyActiveMenu: false, currentCommand: CommandType.FREE, enemyCommand: CommandType.FREE, commandCount: Math.max(1, allyCount), mousePos: { x: 0, y: 0 }, controlMode,
+      allies: Array.from({ length: allyCount }).map((_, i) => createTank(`ally-${i}`, Team.ALLY, { x: 200 + (i % 3) * 100, y: 400 + Math.floor(i/3) * 100 }, COLORS.ALLY, true, `${t('game.teammate')} ${i+1}`)),
+      enemies: Array.from({ length: enemyCount }).map((_, i) => createTank(`enemy-${i}`, Team.ENEMY, { x: WORLD_WIDTH - 200 - (i % 3) * 100, y: WORLD_HEIGHT - 400 - Math.floor(i/3) * 100 }, COLORS.ENEMY, true, i === 0 ? t('game.enemyCommander') : `${t('game.enemy')} ${i+1}`, i === 0)),
+      bullets: [], landmines: [], walls, beds, items: [], effects: [], width: WORLD_WIDTH, height: WORLD_HEIGHT, isGameOver: false, message: t('game.battleStart'), winner: null, activeMenu: false, enemyActiveMenu: false, currentCommand: CommandType.FREE, enemyCommand: CommandType.FREE, commandCount: Math.max(1, allyCount), mousePos: { x: 0, y: 0 }, controlMode,
       isPaused: false, isAIControlled: false, isAutoAimEnabled: false, 
       isAutoFireEnabled: false,
       isMemoryEnabled: true, // 默认开启记忆
+      isPrivacyModeEnabled: false,
+      isPerfOverlayEnabled: false,
+      fps: undefined,
+      longTaskCount: 0,
       activeTab: 'COMMANDS', enemyActiveTab: 'COMMANDS',
       gold: 0,
+      landmineCount: 0,
       teamUpgrades: {
         damage: 0,
         defense: 0,
@@ -189,6 +202,8 @@ const GameCanvas: React.FC<Props> = ({
         haste: 0
       },
       knowledgeBase: memoryService.loadKnowledgeBase(),
+      isAIConnected: false,
+      gameMode: GameMode.NORMAL
     };
   });
 
@@ -213,7 +228,6 @@ const GameCanvas: React.FC<Props> = ({
 
   useEffect(() => {
     // 强制触发一次同步，确保 App.tsx 收到初始状态
-    console.log("Syncing initial state to App");
     onStateUpdate(stateRef.current);
   }, [onStateUpdate]);
 
@@ -275,19 +289,49 @@ const GameCanvas: React.FC<Props> = ({
         return newState;
       });
     };
-    const handleBuyUpgrade = (e: any) => {
-      const { type, cost } = e.detail;
+
+    const handleTogglePrivacyMode = () => {
       setGameState(prev => {
-        if (prev.gold < cost) return prev;
-        const newUpgrades = { ...prev.teamUpgrades, [type]: prev.teamUpgrades[type as keyof typeof prev.teamUpgrades] + SHOP_UPGRADES.BUFF_INCREMENT };
-        const newState = { 
-          ...prev, 
-          gold: prev.gold - cost,
-          teamUpgrades: newUpgrades 
-        };
+        const newState = { ...prev, isPrivacyModeEnabled: !prev.isPrivacyModeEnabled };
         stateRef.current = newState;
         return newState;
       });
+    };
+
+    const handleTogglePerfOverlay = () => {
+      setGameState(prev => {
+        const newState = { ...prev, isPerfOverlayEnabled: !prev.isPerfOverlayEnabled };
+        stateRef.current = newState;
+        return newState;
+      });
+    };
+
+    const handleClearLocalData = () => {
+      memoryService.clearKnowledgeBase();
+      setGameState(prev => {
+        const newState = { ...prev, knowledgeBase: memoryService.loadKnowledgeBase() };
+        stateRef.current = newState;
+        return newState;
+      });
+    };
+
+    const handleBuyUpgrade = (e: any) => {
+      const { type, cost } = e.detail;
+      const current = stateRef.current;
+      if (!current || current.gold < cost) return;
+      
+      let newState: GameState = { ...current };
+      if (type === 'landmine') {
+        newState.gold -= cost;
+        newState.landmineCount += 1;
+      } else {
+        const newUpgrades = { ...current.teamUpgrades, [type]: (current.teamUpgrades[type as keyof typeof current.teamUpgrades] || 0) + SHOP_UPGRADES.BUFF_INCREMENT };
+        newState.gold -= cost;
+        newState.teamUpgrades = newUpgrades;
+      }
+      
+      stateRef.current = newState;
+      setGameState(newState);
     };
     const handleChangeTab = (e: any) => {
       setGameState(prev => ({ ...prev, activeTab: e.detail }));
@@ -309,6 +353,9 @@ const GameCanvas: React.FC<Props> = ({
     window.addEventListener('toggle-auto-aim', handleToggleAutoAim);
     window.addEventListener('toggle-auto-fire', handleToggleAutoFire);
     window.addEventListener('toggle-memory', handleToggleMemory);
+    window.addEventListener('toggle-privacy-mode', handleTogglePrivacyMode);
+    window.addEventListener('toggle-perf-overlay', handleTogglePerfOverlay);
+    window.addEventListener('clear-local-data', handleClearLocalData);
     window.addEventListener('buy-upgrade', handleBuyUpgrade);
     window.addEventListener('change-tab', handleChangeTab);
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -323,6 +370,9 @@ const GameCanvas: React.FC<Props> = ({
       window.removeEventListener('toggle-auto-aim', handleToggleAutoAim);
       window.removeEventListener('toggle-auto-fire', handleToggleAutoFire);
       window.removeEventListener('toggle-memory', handleToggleMemory);
+      window.removeEventListener('toggle-privacy-mode', handleTogglePrivacyMode);
+      window.removeEventListener('toggle-perf-overlay', handleTogglePerfOverlay);
+      window.removeEventListener('clear-local-data', handleClearLocalData);
       window.removeEventListener('buy-upgrade', handleBuyUpgrade);
       window.removeEventListener('change-tab', handleChangeTab);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -332,6 +382,29 @@ const GameCanvas: React.FC<Props> = ({
 
   const lastOnStateUpdateRef = useRef<number>(0);
   const frameCountRef = useRef<number>(0);
+  const fpsSmoothRef = useRef<number>(60);
+  const longTaskCountRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (typeof PerformanceObserver === 'undefined') return;
+    let observer: PerformanceObserver | null = null;
+    try {
+      observer = new PerformanceObserver((list) => {
+        longTaskCountRef.current += list.getEntries().length;
+      });
+      observer.observe({ entryTypes: ['longtask'] as any });
+    } catch {
+      // ignore
+    }
+
+    return () => {
+      try {
+        observer?.disconnect();
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
 
   const gameLoop = useCallback(() => {
     const now = Date.now();
@@ -340,6 +413,15 @@ const GameCanvas: React.FC<Props> = ({
     frameCountRef.current++;
 
     const prev = stateRef.current;
+
+    const instantFps = dt > 0 ? 1 / dt : 0;
+    fpsSmoothRef.current = fpsSmoothRef.current * 0.9 + instantFps * 0.1;
+
+    if (prev.isPerfOverlayEnabled) {
+      prev.fps = fpsSmoothRef.current;
+      prev.longTaskCount = longTaskCountRef.current;
+    }
+
     if (prev.isGameOver || prev.isPaused) {
       if (now - lastOnStateUpdateRef.current > 100) {
         onStateUpdate(prev);
@@ -361,7 +443,145 @@ const GameCanvas: React.FC<Props> = ({
     }
 
     const next = { ...prev };
+
+    if (next.isPerfOverlayEnabled) {
+      next.fps = fpsSmoothRef.current;
+      next.longTaskCount = longTaskCountRef.current;
+    } else {
+      next.fps = undefined;
+    }
     const allTanks = [next.player, ...next.allies, ...next.enemies];
+    const tankMap = new Map<string, Tank>();
+    allTanks.forEach(t => tankMap.set(t.id, t));
+
+    // 每帧构建坦克空间网格，用于加速坦克间的碰撞检测和子弹命中检测
+    const tankGrid: Record<string, Tank[]> = {};
+    const tCellSize = 200;
+    allTanks.forEach(t => {
+      if (t.health <= 0) return;
+      const gx = Math.floor(t.pos.x / tCellSize);
+      const gy = Math.floor(t.pos.y / tCellSize);
+      const key = `${gx},${gy}`;
+      if (!tankGrid[key]) tankGrid[key] = [];
+      tankGrid[key].push(t);
+    });
+
+    const getNearbyTanks = (pos: Vector2D, radius: number = 100) => {
+      const nearby: Tank[] = [];
+      const minX = Math.floor((pos.x - radius) / tCellSize);
+      const maxX = Math.floor((pos.x + radius) / tCellSize);
+      const minY = Math.floor((pos.y - radius) / tCellSize);
+      const maxY = Math.floor((pos.y + radius) / tCellSize);
+      for (let x = minX; x <= maxX; x++) {
+        for (let y = minY; y <= maxY; y++) {
+          const key = `${x},${y}`;
+          if (tankGrid[key]) nearby.push(...tankGrid[key]);
+        }
+      }
+      return nearby;
+    };
+
+    // 共享的坦克移动函数 (包含丝滑避障)
+    const moveTank = (t: Tank, dx: number, dy: number, forceAngle?: number) => {
+      const isIdle = dx === 0 && dy === 0;
+      const targetAngle = forceAngle !== undefined ? forceAngle : (isIdle ? t.rotation : Math.atan2(dy, dx));
+      const currentSpeed = t.currentSpeed || 0;
+      const inWater = next.walls.some(w => w.type === WallType.WATER && checkCollision(t, w));
+      const inSwamp = next.walls.some(w => w.type === WallType.SWAMP && checkCollision(t, w));
+      
+      let speedMult = 1.0;
+      if (t.buffs?.speedTimer && t.buffs.speedTimer > now) speedMult = ITEM_BUFF_VALUES.SPEED_MULT;
+      
+      if (isSameSide(t.team, Team.ALLY)) {
+        speedMult += next.teamUpgrades.speed;
+      } else {
+        speedMult += next.enemyTeamUpgrades.speed;
+      }
+      
+      if (t.isAI || (next.isAIControlled && t.id === 'player')) {
+        speedMult *= AI_AUTOPILOT_SPEED_MULT;
+        if (t.isLeader || (next.isAIControlled && t.id === 'player')) {
+          speedMult *= 1.2;
+        }
+      }
+      
+      let limitSpeed = isIdle ? 0 : t.speed * speedMult;
+      if (inWater) limitSpeed *= WATER_SLOW_FACTOR;
+      if (inSwamp) limitSpeed *= SWAMP_SLOW_FACTOR;
+      const accelRate = (inWater || inSwamp) ? 3.0 : 12.0;
+      const frictionRate = (inWater || inSwamp) ? 5.0 : 15.0;
+      if (isIdle) {
+        const diff = 0 - currentSpeed;
+        t.currentSpeed = currentSpeed + diff * Math.min(1, frictionRate * dt);
+        if (t.currentSpeed < 1) t.currentSpeed = 0;
+      }
+      else {
+        const diff = limitSpeed - currentSpeed;
+        t.currentSpeed = currentSpeed + diff * Math.min(1, (diff > 0 ? accelRate : frictionRate) * dt);
+      }
+      t.rotation = lerpAngle(t.rotation, targetAngle, isIdle ? 0.04 : 0.35);
+      
+      if (t.currentSpeed > 0.05) {
+        const vx = Math.cos(t.rotation) * t.currentSpeed * dt;
+        const vy = Math.sin(t.rotation) * t.currentSpeed * dt;
+        const nextPos = { x: t.pos.x + vx, y: t.pos.y + vy };
+        
+        const isBlocked = (p: Vector2D) => {
+          const nearbyWalls = getNearbyWalls(p, TANK_SIZE * 2);
+          const wallHit = nearbyWalls.some(w => w.type !== WallType.WATER && w.type !== WallType.SWAMP && checkCollision({ ...t, pos: p }, w));
+          const nearbyTanks = getNearbyTanks(p, TANK_SIZE * 2);
+          const tankHit = nearbyTanks.some(other => other.id !== t.id && other.health > 0 && checkCollision({ ...t, pos: p }, other));
+          return wallHit || tankHit || isOutOfBounds(p, TANK_SIZE, WORLD_WIDTH, WORLD_HEIGHT);
+        };
+
+        if (!isBlocked(nextPos)) {
+          t.pos = nextPos;
+          t.detourTimer = 0;
+          return true;
+        } else {
+          const detourAngles = [Math.PI / 4, -Math.PI / 4, Math.PI / 2, -Math.PI / 2];
+          if (t.detourTimer && t.detourTimer > 0 && t.detourSide) {
+             const sideAngle = t.rotation + (t.detourSide * Math.PI / 3);
+             const detourPos = {
+               x: t.pos.x + Math.cos(sideAngle) * t.currentSpeed * dt,
+               y: t.pos.y + Math.sin(sideAngle) * t.currentSpeed * dt
+             };
+             if (!isBlocked(detourPos)) {
+               t.pos = detourPos;
+               t.rotation = lerpAngle(t.rotation, sideAngle, 0.1);
+               t.detourTimer -= dt;
+               return true;
+             }
+          }
+
+          for (const angleOffset of detourAngles) {
+            const testAngle = t.rotation + angleOffset;
+            const testPos = {
+              x: t.pos.x + Math.cos(testAngle) * t.currentSpeed * dt,
+              y: t.pos.y + Math.sin(testAngle) * t.currentSpeed * dt
+            };
+            if (!isBlocked(testPos)) {
+              t.pos = testPos;
+              t.rotation = lerpAngle(t.rotation, testAngle, 0.1);
+              t.detourSide = angleOffset > 0 ? 1 : -1;
+              t.detourTimer = 0.5; 
+              return true;
+            }
+          }
+          
+          const backPos = {
+            x: t.pos.x - Math.cos(t.rotation) * t.currentSpeed * 0.5 * dt,
+            y: t.pos.y - Math.sin(t.rotation) * t.currentSpeed * 0.5 * dt
+          };
+          if (!isBlocked(backPos)) {
+            t.pos = backPos;
+          } else {
+            t.currentSpeed *= 0.1; 
+          }
+        }
+      }
+      return false;
+    };
 
     // 解决坦克重叠导致的卡死问题 (Push-out 逻辑)
     for (let i = 0; i < allTanks.length; i++) {
@@ -397,12 +617,12 @@ const GameCanvas: React.FC<Props> = ({
       }
     }
 
-    // 敌方战术决策
-    if (now - lastEnemyStrategyRef.current > 12000 && !isEnemyStrategyLoading.current) {
+    // 敌方战术决策 (决策频率提升到 4 秒一次，与 AI 代打一致)
+      if (now - lastEnemyStrategyRef.current > 4000 && !isEnemyStrategyLoading.current) {
         const enemyLeader = next.enemies.find(e => e.isLeader && e.health > 0);
         if (enemyLeader) {
           isEnemyStrategyLoading.current = true;
-          getTacticalAdvice(next, Team.ENEMY).then(result => {
+          getTacticalAdvice(next, Team.ENEMY, { allowNetwork: !next.isPrivacyModeEnabled }).then(result => {
             setGameState(prev => {
               const newEnemies = prev.enemies.map(enemy => {
                 const report = result.teammateReports.find(r => r.id === enemy.id);
@@ -447,7 +667,9 @@ const GameCanvas: React.FC<Props> = ({
                 enemyGold: updatedEnemyGold,
                 enemyTeamUpgrades: updatedEnemyUpgrades,
                 enemyActiveMenu,
-                enemyActiveTab
+                enemyActiveTab,
+                currentAIModel: result.aiModel,
+                lastAIResponseTime: result.responseTime
               };
             });
             isEnemyStrategyLoading.current = false;
@@ -459,11 +681,11 @@ const GameCanvas: React.FC<Props> = ({
         }
     }
 
-    // 友方战术决策 (AI 控制玩家时，决策速度提升到 5 秒一次)
-    const allyStrategyInterval = next.isAIControlled ? 5000 : 8000;
+    // 友方战术决策 (AI 控制玩家时，决策速度提升到 4 秒一次)
+    const allyStrategyInterval = next.isAIControlled ? 4000 : 6000;
     if (now - lastAllyStrategyRef.current > allyStrategyInterval && !isAllyStrategyLoading.current) {
       isAllyStrategyLoading.current = true;
-      getTacticalAdvice(next, Team.ALLY).then(result => {
+      getTacticalAdvice(next, Team.ALLY, { allowNetwork: !next.isPrivacyModeEnabled }).then(result => {
         setGameState(prev => {
           const newAllies = prev.allies.map(ally => {
             const report = result.teammateReports.find(r => r.id === ally.id);
@@ -484,7 +706,7 @@ const GameCanvas: React.FC<Props> = ({
 
           let newPlayer = { ...prev.player };
           if (prev.isAIControlled && result.globalAnalysis) {
-            newPlayer.lastDialogue = `AI 指挥官: ${result.globalAnalysis}`;
+            newPlayer.lastDialogue = `${t('game.aiCommander')}: ${result.globalAnalysis}`;
           }
 
           let updatedGold = prev.gold;
@@ -508,12 +730,16 @@ const GameCanvas: React.FC<Props> = ({
               }
 
               const upgradeNames: Record<string, string> = {
-                damage: '攻击', defense: '防御', speed: '速度', regen: '回血', haste: '射速'
+                damage: t('game.upgrade.damage'), 
+                defense: t('game.upgrade.defense'), 
+                speed: t('game.upgrade.speed'), 
+                regen: t('game.upgrade.regen'), 
+                haste: t('game.upgrade.haste')
               };
               const upgradeKey = upgradeId as string;
               const upgradeName = upgradeNames[upgradeKey] || upgradeKey;
               if (newPlayer.health > 0) {
-                newPlayer.lastDialogue = `[军需购入:${upgradeName}] ${newPlayer.lastDialogue || ''}`;
+                newPlayer.lastDialogue = `[${t('game.supplyPurchased')}:${upgradeName}] ${newPlayer.lastDialogue || ''}`;
               }
             }
           } else if (prev.isAIControlled && result.command !== prev.currentCommand) {
@@ -531,8 +757,11 @@ const GameCanvas: React.FC<Props> = ({
             gold: updatedGold,
             teamUpgrades: updatedUpgrades,
             tacticalAdvice: result.globalAnalysis,
+            isAIConnected: true,
             activeMenu,
-            activeTab
+            activeTab,
+            currentAIModel: result.aiModel,
+            lastAIResponseTime: result.responseTime
           };
         });
         isAllyStrategyLoading.current = false;
@@ -555,146 +784,6 @@ const GameCanvas: React.FC<Props> = ({
           lastHPSpawnRef.current = now;
         }
       }
-
-      // 每帧构建坦克空间网格，用于加速坦克间的碰撞检测和子弹命中检测
-      const tankGrid: Record<string, Tank[]> = {};
-      const tCellSize = 200;
-      allTanks.forEach(t => {
-        if (t.health <= 0) return;
-        const gx = Math.floor(t.pos.x / tCellSize);
-        const gy = Math.floor(t.pos.y / tCellSize);
-        const key = `${gx},${gy}`;
-        if (!tankGrid[key]) tankGrid[key] = [];
-        tankGrid[key].push(t);
-      });
-
-      const getNearbyTanks = (pos: Vector2D, radius: number = 100) => {
-        const nearby: Tank[] = [];
-        const minX = Math.floor((pos.x - radius) / tCellSize);
-        const maxX = Math.floor((pos.x + radius) / tCellSize);
-        const minY = Math.floor((pos.y - radius) / tCellSize);
-        const maxY = Math.floor((pos.y + radius) / tCellSize);
-        for (let x = minX; x <= maxX; x++) {
-          for (let y = minY; y <= maxY; y++) {
-            const key = `${x},${y}`;
-            if (tankGrid[key]) nearby.push(...tankGrid[key]);
-          }
-        }
-        return nearby;
-      };
-
-      // 优化：将坦克存入 Map 以便 $O(1)$ 查找
-      const tankMap = new Map<string, Tank>();
-      allTanks.forEach(t => tankMap.set(t.id, t));
-
-      const moveTank = (t: Tank, dx: number, dy: number, forceAngle?: number) => {
-        const isIdle = dx === 0 && dy === 0;
-        const targetAngle = forceAngle !== undefined ? forceAngle : (isIdle ? t.rotation : Math.atan2(dy, dx));
-        const currentSpeed = t.currentSpeed || 0;
-        const inWater = next.walls.some(w => w.type === WallType.WATER && checkCollision(t, w));
-        const inSwamp = next.walls.some(w => w.type === WallType.SWAMP && checkCollision(t, w));
-        
-        // 计算速度 Buff
-        let speedMult = 1.0;
-        if (t.buffs?.speedTimer && t.buffs.speedTimer > now) speedMult = ITEM_BUFF_VALUES.SPEED_MULT;
-        
-        // 应用永久速度加成
-        if (isSameSide(t.team, Team.ALLY)) {
-          speedMult += next.teamUpgrades.speed;
-        } else {
-          speedMult += next.enemyTeamUpgrades.speed;
-        }
-        
-        // AI 性能提升：所有 AI 坦克（盟友、敌人）以及开启代打的玩家坦克都获得速度加成
-        if (t.isAI || (next.isAIControlled && t.id === 'player')) {
-          speedMult *= AI_AUTOPILOT_SPEED_MULT;
-        }
-        
-        let limitSpeed = isIdle ? 0 : t.speed * speedMult;
-        if (inWater) limitSpeed *= WATER_SLOW_FACTOR;
-        if (inSwamp) limitSpeed *= SWAMP_SLOW_FACTOR;
-        const accelRate = (inWater || inSwamp) ? 2.0 : 8.0;
-        const frictionRate = (inWater || inSwamp) ? 4.0 : 12.0;
-        if (isIdle) {
-          const diff = 0 - currentSpeed;
-          t.currentSpeed = currentSpeed + diff * Math.min(1, frictionRate * dt);
-          if (t.currentSpeed < 1) t.currentSpeed = 0;
-        }
-        else {
-          const diff = limitSpeed - currentSpeed;
-          t.currentSpeed = currentSpeed + diff * Math.min(1, (diff > 0 ? accelRate : frictionRate) * dt);
-        }
-        t.rotation = lerpAngle(t.rotation, targetAngle, isIdle ? 0.04 : 0.25);
-        if (t.currentSpeed > 0.05) {
-          const vx = Math.cos(t.rotation) * t.currentSpeed * dt;
-          const vy = Math.sin(t.rotation) * t.currentSpeed * dt;
-          const nextPos = { x: t.pos.x + vx, y: t.pos.y + vy };
-          
-          const isBlocked = (p: Vector2D) => {
-            // 优化：使用 getNearbyWalls 代替全量扫描
-            const nearbyWalls = getNearbyWalls(p, TANK_SIZE * 2);
-            const wallHit = nearbyWalls.some(w => w.type !== WallType.WATER && w.type !== WallType.SWAMP && checkCollision({ ...t, pos: p }, w));
-            // 优化：使用 getNearbyTanks 代替全量扫描
-            const nearbyTanks = getNearbyTanks(p, TANK_SIZE * 2);
-            const tankHit = nearbyTanks.some(other => other.id !== t.id && other.health > 0 && checkCollision({ ...t, pos: p }, other));
-            return wallHit || tankHit || isOutOfBounds(p, TANK_SIZE, WORLD_WIDTH, WORLD_HEIGHT);
-          };
-
-          if (!isBlocked(nextPos)) {
-            t.pos = nextPos;
-            t.detourTimer = 0; // 成功移动，重置绕路计时器
-            return true;
-          } else {
-            // --- 丝滑绕路逻辑 ---
-            // 如果被堵住，尝试左右 45 度和 90 度方向探测
-            const detourAngles = [Math.PI / 4, -Math.PI / 4, Math.PI / 2, -Math.PI / 2];
-            
-            // 如果已经有绕路方向，优先尝试该方向
-            if (t.detourTimer && t.detourTimer > 0 && t.detourSide) {
-               const sideAngle = t.rotation + (t.detourSide * Math.PI / 3);
-               const detourPos = {
-                 x: t.pos.x + Math.cos(sideAngle) * t.currentSpeed * dt,
-                 y: t.pos.y + Math.sin(sideAngle) * t.currentSpeed * dt
-               };
-               if (!isBlocked(detourPos)) {
-                 t.pos = detourPos;
-                 t.rotation = lerpAngle(t.rotation, sideAngle, 0.1);
-                 t.detourTimer -= dt;
-                 return true;
-               }
-            }
-
-            for (const angleOffset of detourAngles) {
-              const testAngle = t.rotation + angleOffset;
-              const testPos = {
-                x: t.pos.x + Math.cos(testAngle) * t.currentSpeed * dt,
-                y: t.pos.y + Math.sin(testAngle) * t.currentSpeed * dt
-              };
-              
-              if (!isBlocked(testPos)) {
-                t.pos = testPos;
-                t.rotation = lerpAngle(t.rotation, testAngle, 0.1);
-                // 记录绕路方向，持续一小段时间，防止抖动
-                t.detourSide = angleOffset > 0 ? 1 : -1;
-                t.detourTimer = 0.5; 
-                return true;
-              }
-            }
-            
-            // 如果所有绕路尝试都失败，尝试微幅后退以脱困
-            const backPos = {
-              x: t.pos.x - Math.cos(t.rotation) * t.currentSpeed * 0.5 * dt,
-              y: t.pos.y - Math.sin(t.rotation) * t.currentSpeed * 0.5 * dt
-            };
-            if (!isBlocked(backPos)) {
-              t.pos = backPos;
-            } else {
-              t.currentSpeed *= 0.1; 
-            }
-          }
-        }
-        return false;
-      };
 
       // 坦克自动回血和 Buff 维护 (包含医疗包和基地回血)
       allTanks.forEach(t => {
@@ -793,13 +882,13 @@ const GameCanvas: React.FC<Props> = ({
              next.player.turretRotation = lerpAngle(next.player.turretRotation, targetRotation, 0.25);
 
              // 自动射击逻辑
-             if (next.isAutoFireEnabled && hasAutoTarget && !mouseMovedRecently) {
-               const angleDiff = Math.abs(((targetRotation - next.player.turretRotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
-               if (angleDiff < 0.2 && now - next.player.lastShot > SHOOT_COOLDOWN) {
-                 next.bullets.push({ id: `bp-auto-${now}`, ownerId: 'player', team: Team.ALLY, pos: { ...next.player.pos }, rotation: next.player.turretRotation, speed: BULLET_SPEED, size: BULLET_SIZE, damage: BULLET_DAMAGE });
-                 next.player.lastShot = now;
-               }
-             }
+            if (next.isAutoFireEnabled && hasAutoTarget && !mouseMovedRecently) {
+              const angleDiff = Math.abs(((targetRotation - next.player.turretRotation + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+              if (angleDiff < 0.2 && now - next.player.lastShot > SHOOT_COOLDOWN) {
+                next.bullets.push({ id: `bp-auto-${now}`, ownerId: 'player', team: Team.ALLY, pos: { ...next.player.pos }, rotation: next.player.turretRotation, speed: BULLET_SPEED, size: BULLET_SIZE, damage: BULLET_DAMAGE });
+                next.player.lastShot = now;
+              }
+            }
           }
         } else {
           pdx = mobileInput.current.dx; pdy = mobileInput.current.dy;
@@ -874,22 +963,22 @@ const GameCanvas: React.FC<Props> = ({
 
         if (allyBase.captureProgress > 1200) {
           newCmd = CommandType.DEFEND;
-          dialogue = "检测到基地受损，全员回防支援！";
+          dialogue = t('game.dialogue.defendBase');
         } else if (player.health < 45) {
           newCmd = CommandType.FREE_PLANNING;
-          dialogue = "我方机体受损，转入自由规划模式进行抢修！";
+          dialogue = t('game.dialogue.selfRepair');
         } else if (getDistance(player.pos, enemyBase.pos) < 700) {
           newCmd = CommandType.CAPTURE;
-          dialogue = "已抵达敌方核心，全员掩护占领！";
+          dialogue = t('game.dialogue.captureCore');
         } else if (visibleEnemies.length >= 3) {
           newCmd = CommandType.SURROUND;
-          dialogue = "遭遇敌方主力，执行战术包围协议！";
+          dialogue = t('game.dialogue.surroundEnemies');
         } else if (visibleEnemies.length > 0) {
           newCmd = CommandType.ATTACK;
-          dialogue = "锁定敌方目标，全军突击！";
+          dialogue = t('game.dialogue.fullAttack');
         } else {
           newCmd = CommandType.RECON;
-          dialogue = "战场态势平稳，展开扇形侦查。";
+          dialogue = t('game.dialogue.recon');
         }
 
         if (newCmd !== next.currentCommand) {
@@ -906,8 +995,8 @@ const GameCanvas: React.FC<Props> = ({
         }
       }
 
-      // 敌方指挥官智能决策 (与 AI 代打同等智能)
-      if (now - lastEnemyAutopilotCommandRef.current > 7000) {
+      // 敌方指挥官智能决策 (频率提升至 4 秒一次)
+      if (now - lastEnemyAutopilotCommandRef.current > 4000) {
         const enemyLeader = next.enemies.find(e => e.isLeader && e.health > 0);
         if (enemyLeader) {
           const myBase = next.beds[1]; // 敌方基地
@@ -920,22 +1009,22 @@ const GameCanvas: React.FC<Props> = ({
 
           if (myBase.captureProgress > 1200) {
             newEnemyCmd = CommandType.DEFEND;
-            enemyDialogue = "全员注意！核心正在被渗透，立即回防！";
+            enemyDialogue = t('game.dialogue.enemyDefendBase');
           } else if (enemyLeader.health < 40) {
             newEnemyCmd = CommandType.FREE_PLANNING;
-            enemyDialogue = "指挥官受损，转入自主作战模式，掩护我撤退！";
+            enemyDialogue = t('game.dialogue.enemyCommanderDamaged');
           } else if (getDistance(enemyLeader.pos, targetBase.pos) < 700) {
             newEnemyCmd = CommandType.CAPTURE;
-            enemyDialogue = "已锁定盟军核心，全线压上，准备占领！";
+            enemyDialogue = t('game.dialogue.enemyCaptureCore');
           } else if (visibleFoes.length >= 2) {
             newEnemyCmd = CommandType.SURROUND;
-            enemyDialogue = "发现盟军小队，执行合围歼灭战术！";
+            enemyDialogue = t('game.dialogue.enemySurroundAllies');
           } else if (visibleFoes.length > 0) {
             newEnemyCmd = CommandType.ATTACK;
-            enemyDialogue = "发现目标，全军突击，不要放跑他们！";
+            enemyDialogue = t('game.dialogue.enemyFullAttack');
           } else {
             newEnemyCmd = CommandType.RECON;
-            enemyDialogue = "继续搜索，扩大侦查范围，寻找盟军踪迹。";
+            enemyDialogue = t('game.dialogue.enemyRecon');
           }
 
           if (newEnemyCmd !== next.enemyCommand) {
@@ -976,11 +1065,11 @@ const GameCanvas: React.FC<Props> = ({
 
       // AI 团队自动购买逻辑
       const shopItems = [
-        { id: 'damage', name: '攻击强化' },
-        { id: 'defense', name: '防御强化' },
-        { id: 'speed', name: '速度强化' },
-        { id: 'regen', name: '回血强化' },
-        { id: 'haste', name: '急速强化' }
+        { id: 'damage', name: t('game.upgrade.damage') },
+        { id: 'defense', name: t('game.upgrade.defense') },
+        { id: 'speed', name: t('game.upgrade.speed') },
+        { id: 'regen', name: t('game.upgrade.regen') },
+        { id: 'haste', name: t('game.upgrade.haste') }
       ];
 
       // 我方 AI 购买 (仅当 AI 控制时，或作为队友辅助)
@@ -1002,7 +1091,7 @@ const GameCanvas: React.FC<Props> = ({
           };
           
           if (next.player.health > 0) {
-            next.player.lastDialogue = `军需官，我方已购入 [${itemToBuy.name}] 协议！`;
+            next.player.lastDialogue = `[${t('game.supplyPurchased')}: ${itemToBuy.name}]`;
           }
 
           // 模拟 AI 打开商城购买的过程
@@ -1016,8 +1105,8 @@ const GameCanvas: React.FC<Props> = ({
         }
       }
 
-      // 敌方 AI 购买
-      if (now - lastEnemyBuyTimeRef.current > 15000) {
+      // 敌方 AI 购买 (频率提升至 6 秒)
+      if (now - lastEnemyBuyTimeRef.current > 6000) {
         if (next.enemyGold >= SHOP_UPGRADES.BASE_COST) {
           const sortedUpgrades = [...shopItems].sort((a, b) => 
             next.enemyTeamUpgrades[a.id as keyof TeamUpgrades] - next.enemyTeamUpgrades[b.id as keyof TeamUpgrades]
@@ -1120,25 +1209,23 @@ const GameCanvas: React.FC<Props> = ({
           state = AIState.PATHFINDING;
           targetPoint = nearestBuff.pos;
         } else if (isCommanded && activeCmd === CommandType.RECON) {
-          // 侦察模式下的“伏击”倾向
-          if (nearbyFoes.length === 0 && !isBaseUnderAttack) {
-            // 寻找附近的坚固墙体作为掩体
-            const sturdyWalls = next.walls.filter(w => 
-              (w.type === WallType.STONE || w.type === WallType.IRON || w.type === WallType.BULLETPROOF) && 
-              getDistance(t.pos, w.pos) < 400
-            );
-            if (sturdyWalls.length > 0) {
-              state = AIState.AMBUSH;
-              targetPoint = t.pos;
-            }
+          state = AIState.RECON;
+          // 全场巡逻逻辑：在地图的四个象限中心和四个角落循环移动
+          const patrolPoints = [
+            {x: 800, y: 800}, {x: WORLD_WIDTH-800, y: 800},
+            {x: WORLD_WIDTH-800, y: WORLD_HEIGHT-800}, {x: 800, y: WORLD_HEIGHT-800},
+            {x: WORLD_WIDTH/2, y: WORLD_HEIGHT/2},
+            {x: WORLD_WIDTH/2, y: 800}, {x: WORLD_WIDTH/2, y: WORLD_HEIGHT-800},
+            {x: 800, y: WORLD_HEIGHT/2}, {x: WORLD_WIDTH-800, y: WORLD_HEIGHT/2}
+          ];
+          
+          if (!t.reconTarget || getDistance(t.pos, t.reconTarget) < 300) {
+            // 按照索引循环选择下一个点，实现“巡逻”感
+            const currentIdx = t.patrolIdx || 0;
+            t.patrolIdx = (currentIdx + 1) % patrolPoints.length;
+            t.reconTarget = patrolPoints[t.patrolIdx];
           }
-          if (state !== AIState.AMBUSH) {
-            state = AIState.RECON;
-            if (!t.reconTarget || getDistance(t.pos, t.reconTarget) < 200) {
-              t.reconTarget = { x: Math.random() * WORLD_WIDTH, y: Math.random() * WORLD_HEIGHT };
-            }
-            targetPoint = t.reconTarget;
-          }
+          targetPoint = t.reconTarget;
         }
         else if (isCommanded && activeCmd === CommandType.FREE_PLANNING) {
           const distToMyBase = getDistance(t.pos, myBase.pos);
@@ -1181,22 +1268,34 @@ const GameCanvas: React.FC<Props> = ({
           };
         } else if (isCommanded && activeCmd === CommandType.RECON) {
           state = AIState.RECON;
-          if (!t.reconTarget || getDistance(t.pos, t.reconTarget) < 200) {
-            // 侦察点优先选择地图四个角落和中心区域
-            const points = [
-              {x: 800, y: 800}, {x: WORLD_WIDTH-800, y: 800},
-              {x: 800, y: WORLD_HEIGHT-800}, {x: WORLD_WIDTH-800, y: WORLD_HEIGHT-800},
-              {x: WORLD_WIDTH/2, y: WORLD_HEIGHT/2}
-            ];
-            t.reconTarget = points[Math.floor(Math.random() * points.length)];
+          // 全场巡逻逻辑：在地图的四个象限中心和四个角落循环移动
+          const patrolPoints = [
+            {x: 800, y: 800}, {x: WORLD_WIDTH-800, y: 800},
+            {x: WORLD_WIDTH-800, y: WORLD_HEIGHT-800}, {x: 800, y: WORLD_HEIGHT-800},
+            {x: WORLD_WIDTH/2, y: WORLD_HEIGHT/2},
+            {x: WORLD_WIDTH/2, y: 800}, {x: WORLD_WIDTH/2, y: WORLD_HEIGHT-800},
+            {x: 800, y: WORLD_HEIGHT/2}, {x: WORLD_WIDTH-800, y: WORLD_HEIGHT/2}
+          ];
+          
+          if (!t.reconTarget || getDistance(t.pos, t.reconTarget) < 300) {
+            const currentIdx = t.patrolIdx || 0;
+            t.patrolIdx = (currentIdx + 1) % patrolPoints.length;
+            t.reconTarget = patrolPoints[t.patrolIdx];
           }
           targetPoint = t.reconTarget;
         } else if (isCommanded && activeCmd === CommandType.ATTACK) {
           state = AIState.ATTACK_CORE; targetPoint = enemyBase.pos;
         } else {
           state = AIState.RECON;
-          if (!t.reconTarget || getDistance(t.pos, t.reconTarget) < 180) {
-            t.reconTarget = { x: 400 + Math.random() * (WORLD_WIDTH - 800), y: 400 + Math.random() * (WORLD_HEIGHT - 800) };
+          const patrolPoints = [
+            {x: 800, y: 800}, {x: WORLD_WIDTH-800, y: 800},
+            {x: WORLD_WIDTH-800, y: WORLD_HEIGHT-800}, {x: 800, y: WORLD_HEIGHT-800},
+            {x: WORLD_WIDTH/2, y: WORLD_HEIGHT/2}
+          ];
+          if (!t.reconTarget || getDistance(t.pos, t.reconTarget) < 300) {
+            const currentIdx = t.patrolIdx || 0;
+            t.patrolIdx = (currentIdx + 1) % patrolPoints.length;
+            t.reconTarget = patrolPoints[t.patrolIdx];
           }
           targetPoint = t.reconTarget;
         }
@@ -1433,8 +1532,9 @@ const GameCanvas: React.FC<Props> = ({
         }
 
         if (currentTarget) {
-          t.turretRotation = lerpAngle(t.turretRotation, getAngle(t.pos, currentTarget), 0.25);
-          const cooldownMult = t.id === 'player' ? 1.2 : (isClearingPath ? 2.0 : 3.5);
+          t.turretRotation = lerpAngle(t.turretRotation, getAngle(t.pos, currentTarget), 0.4);
+          // 指挥官和代打玩家拥有极速反应，普通 AI 射击冷却缩短
+          const cooldownMult = (t.id === 'player' || t.isLeader) ? 1.2 : (isClearingPath ? 1.5 : 1.8);
           
           // 应用急迫加成 (射速)
           let currentShootCooldown = SHOOT_COOLDOWN;
@@ -1519,6 +1619,59 @@ const GameCanvas: React.FC<Props> = ({
         return true;
       });
 
+      // 触发地雷逻辑
+      next.landmines = next.landmines.filter(mine => {
+        const nearbyTanks = getNearbyTanks(mine.pos, TANK_SIZE * 2);
+        // 只有非放置者所属队伍的坦克才会触发地雷
+        const triggerTank = nearbyTanks.find(t => t.health > 0 && !isSameSide(t.team, mine.team) && checkCollision(t, mine));
+        
+        if (triggerTank) {
+          // 地雷触发：寻找爆炸半径内的所有敌方坦克
+          const allTanks = [next.player, ...next.allies, ...next.enemies];
+          const affectedTanks = allTanks.filter(t => 
+            t.health > 0 && 
+            !isSameSide(t.team, mine.team) && 
+            getDistance(t.pos, mine.pos) <= LANDMINE_AOE_RADIUS
+          );
+
+          affectedTanks.forEach(target => {
+            let finalDamage = LANDMINE_DAMAGE;
+            // 应用防御 Buff
+            if (target.buffs?.defenseTimer && target.buffs.defenseTimer > now && target.buffs.defenseValue !== undefined) {
+              finalDamage *= (1 - target.buffs.defenseValue);
+            }
+            // 应用永久防御加成
+            const teamDef = isSameSide(target.team, Team.ALLY) ? next.teamUpgrades.defense : next.enemyTeamUpgrades.defense;
+            finalDamage *= (1 - teamDef);
+
+            target.health -= finalDamage;
+          });
+
+          // 添加爆炸特效 (增大尺寸)
+          next.effects.push({
+            id: `mine-exp-${mine.id}-${now}`,
+            pos: { ...mine.pos },
+            size: LANDMINE_AOE_RADIUS * 1.2,
+            type: EffectType.EXPLOSION,
+            startTime: now,
+            duration: 800
+          });
+          
+          // 添加冲击波效果
+          next.effects.push({
+            id: `mine-sw-${mine.id}-${now}`,
+            pos: { ...mine.pos },
+            size: LANDMINE_AOE_RADIUS,
+            type: EffectType.SHOCKWAVE,
+            startTime: now,
+            duration: 1000
+          });
+
+          return false; // 地雷消耗掉
+        }
+        return true;
+      });
+
       next.bullets = next.bullets.filter(b => {
         const nearbyWalls = getNearbyWalls(b.pos, BULLET_SIZE * 5);
         const inWater = nearbyWalls.some(w => w.type === WallType.WATER && checkCollision(b, w));
@@ -1597,8 +1750,10 @@ const GameCanvas: React.FC<Props> = ({
         // 优化：使用空间网格加速子弹与坦克的碰撞检测
         const nearbyTanks = getNearbyTanks(b.pos, TANK_SIZE * 2);
         for (const t of nearbyTanks) {
-          if (t.health > 0 && t.id !== b.ownerId && !isSameSide(t.team, b.team) && checkCollision(b, t)) {
-            // 计算伤害 Buff 和 抗性 Buff
+          if (t.health > 0 && t.id !== b.ownerId) {
+            // 普通子弹逻辑
+            if (!isSameSide(t.team, b.team) && checkCollision(b, t)) {
+              // 计算伤害 Buff 和 抗性 Buff
             const owner = tankMap.get(b.ownerId);
             let finalDamage = b.damage;
             
@@ -1746,8 +1901,9 @@ const GameCanvas: React.FC<Props> = ({
             return false;
           }
         }
-        return true;
-      });
+      }
+      return true;
+    });
 
       if (frameCountRef.current % 30 === 0) {
         next.walls = next.walls.filter(w => w.health > 0);
@@ -1786,7 +1942,7 @@ const GameCanvas: React.FC<Props> = ({
                   };
 
                   // 异步进行战后反思
-                  reflectOnBattle(battleRecord, next.knowledgeBase!).then(reflection => {
+                  reflectOnBattle(battleRecord, next.knowledgeBase!, { allowNetwork: !next.isPrivacyModeEnabled }).then(reflection => {
                     setGameState(prev => {
                       if (!prev.knowledgeBase) return prev;
                       let updatedKb = memoryService.addBattleRecord(prev.knowledgeBase, battleRecord);
@@ -1906,6 +2062,29 @@ const GameCanvas: React.FC<Props> = ({
             };
           });
         }
+
+        // F 键放置地雷
+        if (key === 'f') {
+          setGameState(prev => {
+            if (prev.landmineCount <= 0 || prev.player.health <= 0 || prev.isPaused) return prev;
+            
+            const newLandmine: Landmine = {
+              id: `mine-${Date.now()}`,
+              pos: { ...prev.player.pos },
+              size: LANDMINE_SIZE,
+              team: Team.ALLY,
+              ownerId: 'player'
+            };
+            
+            const newState = {
+              ...prev,
+              landmineCount: prev.landmineCount - 1,
+              landmines: [...prev.landmines, newLandmine]
+            };
+            stateRef.current = newState;
+            return newState;
+          });
+        }
       }
       keys.current.add(key);
     };
@@ -1927,7 +2106,7 @@ const GameCanvas: React.FC<Props> = ({
   const render = () => {
     const gameState = stateRef.current;
     if (!gameState) return;
-    const { player, allies, enemies, walls, bullets, beds, items } = gameState;
+    const { player, allies, enemies, walls, bullets, beds, items, gameMode } = gameState;
     const now = Date.now();
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1945,7 +2124,7 @@ const GameCanvas: React.FC<Props> = ({
     ctx.save(); ctx.translate(-viewX, -viewY);
     
     // 优化后的草坪渲染：仅绘制视口可见区域
-    ctx.fillStyle = COLORS.GROUND; 
+    ctx.fillStyle = COLORS.GROUND;
     // 只填充视口范围
     ctx.fillRect(viewX, viewY, vw, vh);
 
@@ -1956,17 +2135,63 @@ const GameCanvas: React.FC<Props> = ({
     const endX = viewX + vw;
     const endY = viewY + vh;
 
+    // 轻量哈希：用确定性噪声做地面纹理（避免每帧随机导致闪烁）
+    const hash2 = (x: number, y: number) => {
+      let h = (x * 374761393 + y * 668265263) | 0;
+      h = (h ^ (h >>> 13)) | 0;
+      h = (h * 1274126177) | 0;
+      return (h ^ (h >>> 16)) >>> 0;
+    };
+
     for (let x = startX; x < endX; x += gridSize) {
       for (let y = startY; y < endY; y += gridSize) {
         if ((Math.floor(x / gridSize) + Math.floor(y / gridSize)) % 2 === 0) {
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.04)';
           ctx.fillRect(x, y, gridSize, gridSize);
         }
       }
     }
 
-    // 3. 绘制随机草丛细节 - 仅限视口内
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+    // 3. 草纹/痕迹：更像被压过的草地（确定性，不闪烁）
+    ctx.strokeStyle = 'rgba(2, 6, 23, 0.06)';
+    ctx.lineWidth = 1.5;
+    const streakCell = 260;
+    const streakStartX = Math.floor(viewX / streakCell) * streakCell;
+    const streakStartY = Math.floor(viewY / streakCell) * streakCell;
+    for (let x = streakStartX; x < endX; x += streakCell) {
+      for (let y = streakStartY; y < endY; y += streakCell) {
+        if (x < 0 || y < 0 || x > WORLD_WIDTH || y > WORLD_HEIGHT) continue;
+        const hx = Math.floor(x / streakCell);
+        const hy = Math.floor(y / streakCell);
+        const h = hash2(hx, hy);
+        if (h % 100 < 42) {
+          const px = x + streakCell * 0.5 + (((h >>> 8) % 1000) / 1000 - 0.5) * streakCell * 0.7;
+          const py = y + streakCell * 0.5 + (((h >>> 18) % 1000) / 1000 - 0.5) * streakCell * 0.7;
+          const angle = (((h >>> 2) % 628) / 100) - 3.14;
+          const len = 70 + (h % 90);
+          const dx = Math.cos(angle) * len;
+          const dy = Math.sin(angle) * len;
+
+          ctx.beginPath();
+          ctx.moveTo(px - dx * 0.5, py - dy * 0.5);
+          ctx.lineTo(px + dx * 0.5, py + dy * 0.5);
+          ctx.stroke();
+
+          // 偶尔加一条更淡的“并行草痕”
+          if ((h >>> 1) % 100 < 35) {
+            ctx.globalAlpha = 0.7;
+            ctx.beginPath();
+            ctx.moveTo(px - dx * 0.45 + dy * 0.08, py - dy * 0.45 - dx * 0.08);
+            ctx.lineTo(px + dx * 0.45 + dy * 0.08, py + dy * 0.45 - dx * 0.08);
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+          }
+        }
+      }
+    }
+
+    // 4. 绘制随机草丛细节 - 仅限视口内（叶片高光）
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
     ctx.lineWidth = 2;
     const detailDensity = 150;
     const detailStartX = Math.floor(viewX / detailDensity) * detailDensity;
@@ -1976,19 +2201,54 @@ const GameCanvas: React.FC<Props> = ({
       for (let y = detailStartY; y < endY; y += detailDensity) {
         // 只有在世界范围内才绘制
         if (x < 0 || y < 0 || x > WORLD_WIDTH || y > WORLD_HEIGHT) continue;
-        
-        const seed = (x * 12345 + y * 67890) % 100;
-        if (seed > 40) {
-          const offsetX = (seed % 30) - 15;
-          const offsetY = ((seed * 7) % 30) - 15;
+
+        const hx = Math.floor(x / detailDensity);
+        const hy = Math.floor(y / detailDensity);
+        const h = hash2(hx, hy);
+        if (h % 100 > 40) {
+          const offsetX = (((h >>> 8) % 30) - 15);
+          const offsetY = (((h >>> 18) % 30) - 15);
           const px = x + offsetX;
           const py = y + offsetY;
-          
+
           ctx.beginPath();
           ctx.moveTo(px - 4, py + 4); ctx.lineTo(px - 2, py - 4);
           ctx.moveTo(px, py + 5); ctx.lineTo(px, py - 6);
           ctx.moveTo(px + 4, py + 4); ctx.lineTo(px + 2, py - 4);
           ctx.stroke();
+        }
+      }
+    }
+
+    // 5. 小石子点缀：草地上零散碎石（确定性，不闪烁）
+    const stoneCell = 220;
+    const stoneStartX = Math.floor(viewX / stoneCell) * stoneCell;
+    const stoneStartY = Math.floor(viewY / stoneCell) * stoneCell;
+    for (let x = stoneStartX; x < endX; x += stoneCell) {
+      for (let y = stoneStartY; y < endY; y += stoneCell) {
+        if (x < 0 || y < 0 || x > WORLD_WIDTH || y > WORLD_HEIGHT) continue;
+        const hx = Math.floor(x / stoneCell);
+        const hy = Math.floor(y / stoneCell);
+        const h = hash2(hx + 999, hy + 1337);
+        if (h % 100 < 18) {
+          const count = 1 + (h % 3);
+          for (let i = 0; i < count; i++) {
+            const h2 = hash2(hx * 31 + i * 7, hy * 17 + i * 13);
+            const ox = ((h2 % 1000) / 1000 - 0.5) * stoneCell * 0.8;
+            const oy = (((Math.floor(h2 / 1000) % 1000) / 1000) - 0.5) * stoneCell * 0.8;
+            const px = x + stoneCell / 2 + ox;
+            const py = y + stoneCell / 2 + oy;
+            const r = 1.2 + ((h2 >>> 3) % 100) / 100 * 2.2;
+
+            ctx.fillStyle = 'rgba(148, 163, 184, 0.28)';
+            ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.fill();
+            // 高光
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+            ctx.beginPath(); ctx.arc(px - r * 0.3, py - r * 0.3, r * 0.45, 0, Math.PI * 2); ctx.fill();
+            // 轻微阴影
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.10)';
+            ctx.beginPath(); ctx.arc(px + r * 0.4, py + r * 0.4, r * 0.65, 0, Math.PI * 2); ctx.fill();
+          }
         }
       }
     }
@@ -2216,6 +2476,42 @@ const GameCanvas: React.FC<Props> = ({
         ctx.fillText(`${percent}%`, x, y + size/2 + 70);
       }
     });
+    // 4. 渲染地雷
+    gameState.landmines.forEach(mine => {
+      // 只有放置者所属队伍可见 (盟友放置的地雷对玩家可见)
+      const isVisible = isSameSide(mine.team, Team.ALLY);
+      if (!isVisible) return;
+
+      if (!isInView(mine.pos.x, mine.pos.y, mine.size * 2)) return;
+
+      ctx.save();
+      ctx.translate(mine.pos.x, mine.pos.y);
+      
+      // 绘制地雷主体 (暗黑色圆盘)
+      ctx.beginPath();
+      ctx.arc(0, 0, mine.size / 2, 0, Math.PI * 2);
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fill();
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // 绘制地雷中心指示灯 (盟友可见，显示为蓝色)
+      ctx.beginPath();
+      ctx.arc(0, 0, mine.size / 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#3b82f6'; 
+      ctx.fill();
+      
+      // 呼吸灯效果
+      const alpha = 0.3 + Math.sin(now / 300) * 0.2;
+      ctx.beginPath();
+      ctx.arc(0, 0, mine.size / 3, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(59, 130, 246, ${alpha})`;
+      ctx.fill();
+
+      ctx.restore();
+    });
+
     const drawTank = (t: Tank) => {
       if (t.health <= 0 || !isInView(t.pos.x, t.pos.y, TANK_SIZE * 2)) return;
       const isEnemy = !isSameSide(t.team, Team.ALLY); const isLeader = t.isLeader;
